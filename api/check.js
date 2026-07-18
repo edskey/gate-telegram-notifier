@@ -328,8 +328,11 @@ async function handler(req, res) {
 
     state.initializedAt = state.initializedAt || new Date().toISOString();
     state.checkedAt = new Date().toISOString();
-    await saveState(state);
     for (const message of messages) await sendTelegram(message);
+    // Commit deduplication only after Telegram accepts every message. If the
+    // delivery fails, the scheduler can retry instead of silently losing a
+    // newly discovered promotion or transaction.
+    await saveState(state);
     return respond(res, 200, result);
   } catch (error) {
     console.error(error);

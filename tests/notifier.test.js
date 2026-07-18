@@ -34,6 +34,7 @@ test('protected POST uses scheduler promotions and sends a test to a channel', a
   });
 
   const telegramBodies = [];
+  const sideEffects = [];
   context.mock.method(global, 'fetch', async (url, options = {}) => {
     const target = String(url);
     if (target.startsWith('https://api.gateio.ws/')) {
@@ -41,10 +42,12 @@ test('protected POST uses scheduler promotions and sends a test to a channel', a
     }
     if (target === 'https://redis.test') {
       const command = JSON.parse(options.body);
+      if (command[0] === 'SET' && !command.includes('NX')) sideEffects.push('save-state');
       const result = command[0] === 'SET' && command.includes('NX') ? 'OK' : null;
       return new Response(JSON.stringify({ result }), { status: 200 });
     }
     if (target.startsWith('https://api.telegram.org/')) {
+      sideEffects.push('send-telegram');
       telegramBodies.push(JSON.parse(options.body));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -85,4 +88,5 @@ test('protected POST uses scheduler promotions and sends a test to a channel', a
   assert.equal(telegramBodies[0].chat_id, '-1004344864116');
   assert.match(telegramBodies[0].text, /Тестовое уведомление/);
   assert.match(telegramBodies[0].text, /Карнавал прогнозов/);
+  assert.deepEqual(sideEffects, ['send-telegram', 'save-state']);
 });
