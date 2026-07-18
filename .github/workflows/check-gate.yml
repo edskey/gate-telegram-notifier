@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       test_notification:
-        description: 'Send one clearly marked test promotion notification'
+        description: 'Send up to three clearly marked test promotion notifications'
         required: false
         default: false
         type: boolean

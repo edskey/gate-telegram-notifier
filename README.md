@@ -63,6 +63,9 @@ Telegram. Channel formatting can be changed independently without affecting the
 deduplication rule.
 
 To verify Telegram delivery without waiting for a new campaign, manually run
-the GitHub Action and tick `test_notification`. It posts one existing promotion
-card prefixed with `🧪 Тестовое уведомление`; it does not alter the saved list
-of promotion IDs.
+the GitHub Action and tick `test_notification`. It posts up to three existing
+promotion cards as separate, numbered test messages; it does not alter the
+saved list of promotion IDs. If several genuinely new promotions appear between
+checks, each is also sent as a separate message. Delivery state is checkpointed
+after every accepted message, so a partial Telegram failure retries only the
+remaining items.

@@ -34,10 +34,7 @@ async function gateGet(path, params = {}) {
   const base = env('GATE_API_BASE_URL', false) || 'https://api.gateio.ws';
   const query = new URLSearchParams(
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null)
-  // Gate's Activity API expects comma-separated type_ids to keep literal
-  // commas in both the URL and signature string. URLSearchParams encodes them
-  // as %2C by default, which this endpoint rejects as INVALID_SIGNATURE.
-  ).toString().replace(/%2C/gi, ',');
+  ).toString();
   const timestamp = String(Math.floor(Date.now() / 1000));
   const apiPath = `${GATE_PREFIX}${path}`;
   const signaturePayload = `GET\n${apiPath}\n${query}\n${sha512('')}\n${timestamp}`;
@@ -124,98 +121,25 @@ function formatTransaction(record) {
     ['Комиссия', record.commission ?? record.rebate_amount ?? record.fee],
     ['Время', record.create_time ?? record.time ?? record.created_at],
   ].filter(([, value]) => value !== undefined);
-  return `🟢 Новая активность партнёра Gate\n${rows.map(([k, v]) => `${k}: ${formatValue(v)}`).join('\n')}`;
+  return `🟢 <b>Новая активность партнёра Gate</b>\n\n${rows
+    .map(([key, value]) => `<b>${escapeTelegramHtml(key)}:</b> ${escapeTelegramHtml(formatValue(value))}`)
+    .join('\n')}`;
 }
 
-function promotionFromActivity(activity) {
-  const rawId = activity.activity_id ?? activity.activityId ?? activity.id ?? activity.event_id ?? activity.eventId;
-  const id = rawId === undefined || rawId === null
-    ? `hash:${crypto.createHash('sha256').update(JSON.stringify(activity)).digest('hex')}`
-    : `activity:${rawId}`;
-  const rawUrl = activity.url ?? activity.jump_url ?? activity.jumpUrl ?? activity.activity_url ?? activity.activityUrl ?? activity.link;
-  let url = rawUrl || `https://www.gate.com/campaigns/${rawId}`;
-  try { url = new URL(url, 'https://www.gate.com').toString(); } catch { /* keep the API value for diagnostics */ }
-  const text = [
-    activity.competition_name,
-    activity.competition_title,
-    activity.master_one_line,
-    activity.master_two_line,
-    activity.slave_one_line,
-    activity.slave_two_line,
-    activity.name,
-    activity.activity_name,
-    activity.activityName,
-    activity.title,
-    activity.subtitle,
-    activity.sub_title,
-    activity.description,
-    activity.desc,
-  ].filter((value) => typeof value === 'string' && value.trim()).join('\n').slice(0, 700);
-  return { id, url, text: text || `Gate activity ${rawId}` };
-}
-
-async function getPromotions() {
-  // These are official authenticated API v4 endpoints. `activity-type` makes
-  // the category list dynamic, so Gate can add a new Activity Center sector
-  // without requiring a bot deployment.
-  const typeResponse = await gateGet('/rewards/activity/activity-type');
-  const types = recordsFrom(typeResponse);
-  const typeIds = types
-    .map((item) => item.type_id ?? item.typeId ?? item.id)
-    .filter((value) => value !== undefined && value !== null);
-  const allTypeIds = typeIds.join(',');
-  const queries = [
-    {
-      name: 'all_types',
-      params: {
-        recommend_type: typeIds.length > 0 ? 'type' : undefined,
-        type_ids: allTypeIds || undefined,
-        page: 1,
-        page_size: 100,
-      },
-    },
-    {
-      name: 'type_ids_only',
-      params: { type_ids: allTypeIds || undefined, page: 1, page_size: 100 },
-    },
-    {
-      name: 'hot',
-      params: { recommend_type: 'hot', page: 1, page_size: 100 },
-    },
-  ];
-  const activityResponses = await Promise.all(queries.map(async (query) => ({
-    name: query.name,
-    response: await gateGet('/rewards/activity/activity-list', query.params),
-  })));
-  const sourceCounts = Object.fromEntries(
-    activityResponses.map(({ name, response }) => [name, recordsFrom(response).length])
-  );
-  const activities = activityResponses.flatMap(({ response }) => recordsFrom(response));
-  if (activities.length === 0) {
-    const diagnostics = activityResponses.map(({ name, response }) => ({
-      name,
-      code: response?.code,
-      message: response?.message,
-      totalCount: response?.data?.totalCount ?? response?.data?.total_count,
-      pageCount: response?.data?.pageCount ?? response?.data?.page_count,
-      dataKeys: response?.data && typeof response.data === 'object' ? Object.keys(response.data) : [],
-    }));
-    throw new Error(`Gate activity API returned no activities: ${JSON.stringify(diagnostics)}`);
-  }
-  const unique = new Map();
-  for (const activity of activities) {
-    const promotion = promotionFromActivity(activity);
-    if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
-  }
-  return { promotions: [...unique.values()], categories: types, sourceCounts };
+function escapeTelegramHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function formatPromotion(promotion) {
-  return `🆕 Новая промо-акция Gate\n${promotion.text}\n\n${promotion.url}`;
+  return `🆕 <b>Новая промоакция Gate</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
 }
 
-function formatPromotionTest(promotion) {
-  return `🧪 Тестовое уведомление — новая промо-акция Gate\n${promotion.text}\n\n${promotion.url}`;
+function formatPromotionTest(promotion, index, total) {
+  return `🧪 <b>Тест уведомления ${index}/${total}</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
 }
 
 function promotionsFromRequest(req) {
@@ -245,7 +169,7 @@ async function sendTelegram(text) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
   });
   const body = await response.json();
   if (!response.ok || !body.ok) {
@@ -287,7 +211,9 @@ async function handler(req, res) {
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
     const [activityResult, promotionResult, savedState] = await Promise.all([
       gateGet('/rebate/partner/transaction_history', { page: 1, limit }),
-      scheduledPromotions ? Promise.resolve(scheduledPromotions) : getPromotions(),
+      scheduledPromotions
+        ? Promise.resolve(scheduledPromotions)
+        : Promise.reject(new Error('Promotion payload from scheduler browser is missing or empty')),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
       (value) => ({ ok: true, value }),
@@ -296,7 +222,9 @@ async function handler(req, res) {
 
     const state = savedState.ok && savedState.value ? savedState.value : {};
     const result = { ok: true, initialized: [], sent: { transactions: 0, promotions: 0 }, errors: {} };
-    const messages = [];
+    const deliveries = [];
+    const currentIdsBySource = {};
+    let testPromotions = [];
 
     if (activityResult.ok) {
       const records = recordsFrom(activityResult.value);
@@ -305,8 +233,13 @@ async function handler(req, res) {
       if (known.initialized) result.initialized.push('transactions');
       const seen = new Set(known.sentIds || []);
       const fresh = known.initialized ? [] : records.filter((record) => !seen.has(eventId(record)));
-      messages.push(...fresh.reverse().map((record) => formatTransaction(record)));
-      state.transactions = { sentIds: uniqueIds([...currentIds, ...(known.sentIds || [])]) };
+      deliveries.push(...fresh.reverse().map((record) => ({
+        source: 'transactions',
+        id: eventId(record),
+        text: formatTransaction(record),
+      })));
+      state.transactions = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.transactions = currentIds;
       result.transactions = records.length;
       result.sent.transactions = fresh.length;
     } else {
@@ -320,15 +253,21 @@ async function handler(req, res) {
       if (known.initialized) result.initialized.push('promotions');
       const seen = new Set(known.sentIds || []);
       const fresh = known.initialized ? [] : promotions.filter((promotion) => !seen.has(promotion.id));
-      messages.push(...fresh.reverse().map((promotion) => formatPromotion(promotion)));
-      state.promotions = { sentIds: uniqueIds([...currentIds, ...(known.sentIds || [])]) };
+      deliveries.push(...fresh.reverse().map((promotion) => ({
+        source: 'promotions',
+        id: promotion.id,
+        text: formatPromotion(promotion),
+      })));
+      state.promotions = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.promotions = currentIds;
       result.promotions = promotions.length;
       result.categories = categories.length;
       result.promotionSources = sourceCounts;
       result.sent.promotions = fresh.length;
-      if (testNotification && promotions[0]) {
-        messages.push(formatPromotionTest(promotions[0]));
+      if (testNotification) {
+        testPromotions = promotions.slice(0, 3);
         result.testNotification = true;
+        result.testNotifications = testPromotions.length;
       }
     } else {
       result.errors.promotions = promotionResult.error.message;
@@ -340,11 +279,27 @@ async function handler(req, res) {
 
     state.initializedAt = state.initializedAt || new Date().toISOString();
     state.checkedAt = new Date().toISOString();
-    for (const message of messages) await sendTelegram(message);
-    // Commit deduplication only after Telegram accepts every message. If the
-    // delivery fails, the scheduler can retry instead of silently losing a
-    // newly discovered promotion or transaction.
+    // Save a new-source baseline before sending, then checkpoint every
+    // accepted message. A partial Telegram failure retries only the remaining
+    // items on the next scheduler run.
     await saveState(state);
+    for (const delivery of deliveries) {
+      await sendTelegram(delivery.text);
+      state[delivery.source].sentIds = uniqueIds([
+        delivery.id,
+        ...(state[delivery.source].sentIds || []),
+      ]);
+      state.checkedAt = new Date().toISOString();
+      await saveState(state);
+    }
+    for (const [source, currentIds] of Object.entries(currentIdsBySource)) {
+      state[source].sentIds = uniqueIds([...currentIds, ...(state[source].sentIds || [])]);
+    }
+    state.checkedAt = new Date().toISOString();
+    await saveState(state);
+    for (const [index, promotion] of testPromotions.entries()) {
+      await sendTelegram(formatPromotionTest(promotion, index + 1, testPromotions.length));
+    }
     return respond(res, 200, result);
   } catch (error) {
     console.error(error);
@@ -357,4 +312,3 @@ async function handler(req, res) {
 }
 
 module.exports = handler;
-module.exports._test = { promotionsFromRequest };
