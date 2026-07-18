@@ -16,9 +16,9 @@ each one once to Telegram.
 - Telegram notifications for later transactions.
 - GitHub Actions trigger every five minutes for Vercel Hobby.
 
-The default promotion page is the currently selected Activity Center category
-(`activity-center-1-ongoing`). Change `PROMOTION_PAGE_URL` in Vercel when a
-different category becomes the desired source.
+The bot opens the Activity Center and discovers every visible category link on
+each check (Airdrop, Trading, TradFi, Alpha, Earn, and any category Gate adds
+later). It then scans all of those category pages for new promotion cards.
 
 ## Setup
 
@@ -59,3 +59,8 @@ The bot treats a newly appearing promotion-card link (for example,
 `/campaigns/5534`) as a new promotion. It sends the card text and direct URL to
 Telegram. Channel formatting can be changed independently without affecting the
 deduplication rule.
+
+To verify Telegram delivery without waiting for a new campaign, manually run
+the GitHub Action and tick `test_notification`. It posts one existing promotion
+card prefixed with `🧪 Тестовое уведомление`; it does not alter the saved list
+of promotion IDs.

@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      test_notification:
+        description: 'Send one clearly marked test promotion notification'
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -15,10 +21,15 @@ jobs:
         env:
           CHECK_URL: ${{ secrets.VERCEL_CHECK_URL }}
           CHECK_SECRET: ${{ secrets.CHECK_SECRET }}
+          TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
         run: |
           test -n "$CHECK_URL"
           test -n "$CHECK_SECRET"
+          extra_header=()
+          if [ "$TEST_NOTIFICATION" = "true" ]; then
+            extra_header=(-H "X-Gate-Bot-Test: true")
+          fi
           curl --fail-with-body --silent --show-error --max-time 20 \
             -H "Authorization: Bearer $CHECK_SECRET" \
+            "${extra_header[@]}" \
             "$CHECK_URL"
-

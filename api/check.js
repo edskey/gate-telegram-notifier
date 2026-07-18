@@ -4,7 +4,7 @@ const GATE_PREFIX = '/api/v4';
 const STATE_KEY = 'gate-partner-bot:state:v2';
 const LOCK_KEY = 'gate-partner-bot:check-lock:v1';
 const MAX_SENT_IDS = 500;
-const DEFAULT_PROMOTION_PAGE = 'https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing';
+const DEFAULT_PROMOTION_CENTER = 'https://www.gate.com/ru/rewards_hub/events';
 
 function env(name, required = true) {
   const value = process.env[name];
@@ -160,19 +160,49 @@ function extractPromotions(html, pageUrl) {
   return [...unique.values()];
 }
 
-async function getPromotions() {
-  const pageUrl = process.env.PROMOTION_PAGE_URL || DEFAULT_PROMOTION_PAGE;
+function extractCategoryUrls(html, pageUrl) {
+  const urls = new Set();
+  const anchor = /<a\b[^>]*\bhref=(?:"([^"]+)"|'([^']+)')[^>]*>/gi;
+  let match;
+  while ((match = anchor.exec(html)) !== null) {
+    let url;
+    try { url = new URL(match[1] || match[2], pageUrl); } catch { continue; }
+    if (/\/rewards_hub\/activity-center-\d+-ongoing$/i.test(url.pathname)) {
+      urls.add(url.toString());
+    }
+  }
+  return [...urls];
+}
+
+async function fetchPromotionPage(pageUrl) {
   const response = await fetch(pageUrl, {
     headers: { Accept: 'text/html', 'User-Agent': 'GatePromotionNotifier/1.0' },
   });
   if (!response.ok) throw new Error(`Promotions page ${response.status}`);
-  const promotions = extractPromotions(await response.text(), pageUrl);
+  return { html: await response.text(), url: response.url || pageUrl };
+}
+
+async function getPromotions() {
+  // The Activity Center page lists all category tabs. Reading the links on
+  // every invocation means newly added Gate categories are included without a
+  // code or environment-variable update.
+  const centerUrl = process.env.PROMOTION_CENTER_URL || DEFAULT_PROMOTION_CENTER;
+  const center = await fetchPromotionPage(centerUrl);
+  const categoryUrls = [...new Set([center.url, ...extractCategoryUrls(center.html, center.url)])];
+  const pages = await Promise.all(categoryUrls.map(fetchPromotionPage));
+  const promotions = pages.flatMap((page) => extractPromotions(page.html, page.url));
   if (promotions.length === 0) throw new Error('Promotions page returned no recognizable promotion cards');
-  return promotions;
+  const unique = new Map();
+  for (const promotion of promotions) if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
+  return { promotions: [...unique.values()], categories: categoryUrls };
 }
 
 function formatPromotion(promotion) {
   return `🆕 Новая промо-акция Gate\n${promotion.text}\n\n${promotion.url}`;
+}
+
+function formatPromotionTest(promotion) {
+  return `🧪 Тестовое уведомление — новая промо-акция Gate\n${promotion.text}\n\n${promotion.url}`;
 }
 
 async function sendTelegram(text) {
@@ -200,6 +230,7 @@ module.exports = async (req, res) => {
     return respond(res, 405, { error: 'method_not_allowed' });
   }
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
+  const testNotification = req.headers['x-gate-bot-test'] === 'true';
 
   let acquiredLock = false;
   try {
@@ -236,7 +267,7 @@ module.exports = async (req, res) => {
     }
 
     if (promotionResult.ok) {
-      const promotions = promotionResult.value;
+      const { promotions, categories } = promotionResult.value;
       const currentIds = promotions.map((promotion) => promotion.id);
       const known = initializeSource(state, 'promotions', currentIds);
       if (known.initialized) result.initialized.push('promotions');
@@ -245,7 +276,12 @@ module.exports = async (req, res) => {
       messages.push(...fresh.reverse().map((promotion) => formatPromotion(promotion)));
       state.promotions = { sentIds: uniqueIds([...currentIds, ...(known.sentIds || [])]) };
       result.promotions = promotions.length;
+      result.categories = categories.length;
       result.sent.promotions = fresh.length;
+      if (testNotification && promotions[0]) {
+        messages.push(formatPromotionTest(promotions[0]));
+        result.testNotification = true;
+      }
     } else {
       result.errors.promotions = promotionResult.error.message;
     }
