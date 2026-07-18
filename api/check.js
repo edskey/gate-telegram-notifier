@@ -34,7 +34,10 @@ async function gateGet(path, params = {}) {
   const base = env('GATE_API_BASE_URL', false) || 'https://api.gateio.ws';
   const query = new URLSearchParams(
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null)
-  ).toString();
+  // Gate's Activity API expects comma-separated type_ids to keep literal
+  // commas in both the URL and signature string. URLSearchParams encodes them
+  // as %2C by default, which this endpoint rejects as INVALID_SIGNATURE.
+  ).toString().replace(/%2C/gi, ',');
   const timestamp = String(Math.floor(Date.now() / 1000));
   const apiPath = `${GATE_PREFIX}${path}`;
   const signaturePayload = `GET\n${apiPath}\n${query}\n${sha512('')}\n${timestamp}`;
@@ -133,6 +136,12 @@ function promotionFromActivity(activity) {
   let url = rawUrl || `https://www.gate.com/campaigns/${rawId}`;
   try { url = new URL(url, 'https://www.gate.com').toString(); } catch { /* keep the API value for diagnostics */ }
   const text = [
+    activity.competition_name,
+    activity.competition_title,
+    activity.master_one_line,
+    activity.master_two_line,
+    activity.slave_one_line,
+    activity.slave_two_line,
     activity.name,
     activity.activity_name,
     activity.activityName,
@@ -154,18 +163,13 @@ async function getPromotions() {
   const typeIds = types
     .map((item) => item.type_id ?? item.typeId ?? item.id)
     .filter((value) => value !== undefined && value !== null);
-  // Gate currently rejects the signature when multiple type IDs are joined by
-  // commas in one query. One request per type avoids that ambiguity and also
-  // lets a newly introduced category fail independently during diagnostics.
-  const activityResponses = typeIds.length > 0
-    ? await Promise.all(typeIds.map((typeId) => gateGet('/rewards/activity/activity-list', {
-      recommend_type: 'type',
-      type_ids: typeId,
-      page: 1,
-      page_size: 100,
-    })))
-    : [await gateGet('/rewards/activity/activity-list', { page: 1, page_size: 100 })];
-  const activities = activityResponses.flatMap(recordsFrom);
+  const activityResponse = await gateGet('/rewards/activity/activity-list', {
+    recommend_type: typeIds.length > 0 ? 'type' : 'hot',
+    type_ids: typeIds.length > 0 ? typeIds.join(',') : undefined,
+    page: 1,
+    page_size: 100,
+  });
+  const activities = recordsFrom(activityResponse);
   if (activities.length === 0) throw new Error('Gate activity API returned no activities');
   const unique = new Map();
   for (const activity of activities) {
