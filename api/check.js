@@ -163,20 +163,51 @@ async function getPromotions() {
   const typeIds = types
     .map((item) => item.type_id ?? item.typeId ?? item.id)
     .filter((value) => value !== undefined && value !== null);
-  const activityResponse = await gateGet('/rewards/activity/activity-list', {
-    recommend_type: typeIds.length > 0 ? 'type' : 'hot',
-    type_ids: typeIds.length > 0 ? typeIds.join(',') : undefined,
-    page: 1,
-    page_size: 100,
-  });
-  const activities = recordsFrom(activityResponse);
-  if (activities.length === 0) throw new Error('Gate activity API returned no activities');
+  const allTypeIds = typeIds.join(',');
+  const queries = [
+    {
+      name: 'all_types',
+      params: {
+        recommend_type: typeIds.length > 0 ? 'type' : undefined,
+        type_ids: allTypeIds || undefined,
+        page: 1,
+        page_size: 100,
+      },
+    },
+    {
+      name: 'type_ids_only',
+      params: { type_ids: allTypeIds || undefined, page: 1, page_size: 100 },
+    },
+    {
+      name: 'hot',
+      params: { recommend_type: 'hot', page: 1, page_size: 100 },
+    },
+  ];
+  const activityResponses = await Promise.all(queries.map(async (query) => ({
+    name: query.name,
+    response: await gateGet('/rewards/activity/activity-list', query.params),
+  })));
+  const sourceCounts = Object.fromEntries(
+    activityResponses.map(({ name, response }) => [name, recordsFrom(response).length])
+  );
+  const activities = activityResponses.flatMap(({ response }) => recordsFrom(response));
+  if (activities.length === 0) {
+    const diagnostics = activityResponses.map(({ name, response }) => ({
+      name,
+      code: response?.code,
+      message: response?.message,
+      totalCount: response?.data?.totalCount ?? response?.data?.total_count,
+      pageCount: response?.data?.pageCount ?? response?.data?.page_count,
+      dataKeys: response?.data && typeof response.data === 'object' ? Object.keys(response.data) : [],
+    }));
+    throw new Error(`Gate activity API returned no activities: ${JSON.stringify(diagnostics)}`);
+  }
   const unique = new Map();
   for (const activity of activities) {
     const promotion = promotionFromActivity(activity);
     if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
   }
-  return { promotions: [...unique.values()], categories: types };
+  return { promotions: [...unique.values()], categories: types, sourceCounts };
 }
 
 function formatPromotion(promotion) {
@@ -249,7 +280,7 @@ module.exports = async (req, res) => {
     }
 
     if (promotionResult.ok) {
-      const { promotions, categories } = promotionResult.value;
+      const { promotions, categories, sourceCounts } = promotionResult.value;
       const currentIds = promotions.map((promotion) => promotion.id);
       const known = initializeSource(state, 'promotions', currentIds);
       if (known.initialized) result.initialized.push('promotions');
@@ -259,6 +290,7 @@ module.exports = async (req, res) => {
       state.promotions = { sentIds: uniqueIds([...currentIds, ...(known.sentIds || [])]) };
       result.promotions = promotions.length;
       result.categories = categories.length;
+      result.promotionSources = sourceCounts;
       result.sent.promotions = fresh.length;
       if (testNotification && promotions[0]) {
         messages.push(formatPromotionTest(promotions[0]));
