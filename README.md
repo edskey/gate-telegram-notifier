@@ -9,16 +9,17 @@ each one once to Telegram.
 - `GET`/`POST /api/check`: protected trigger endpoint.
 - Gate API v4 HMAC-SHA512 signing and a request to
   `/rebate/partner/transaction_history`.
-- Public promotion monitoring for Gate's Activity Center. A new campaign card
-  link is the event trigger; no browser session or cookies are used.
+- Official Gate API v4 monitoring for the Activity Center. The API supplies
+  activity types and their recommended activities; no browser session, cookies,
+  or HTML parser is used.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
 - GitHub Actions trigger every five minutes for Vercel Hobby.
 
-The bot opens the Activity Center and discovers every visible category link on
-each check (Airdrop, Trading, TradFi, Alpha, Earn, and any category Gate adds
-later). It then scans all of those category pages for new promotion cards.
+The bot queries Gate's official list of Activity Center types on every check,
+then requests activities across all of them. New Gate sectors therefore need no
+code or environment-variable update.
 
 ## Setup
 

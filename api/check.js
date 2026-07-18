@@ -4,7 +4,6 @@ const GATE_PREFIX = '/api/v4';
 const STATE_KEY = 'gate-partner-bot:state:v2';
 const LOCK_KEY = 'gate-partner-bot:check-lock:v1';
 const MAX_SENT_IDS = 500;
-const DEFAULT_PROMOTION_CENTER = 'https://www.gate.com/ru/rewards_hub/events';
 
 function env(name, required = true) {
   const value = process.env[name];
@@ -89,7 +88,7 @@ async function saveState(state) {
 
 function recordsFrom(response) {
   if (Array.isArray(response)) return response;
-  for (const key of ['data', 'list', 'items', 'records']) {
+  for (const key of ['data', 'list', 'items', 'records', 'activities', 'activity_list', 'activity_types', 'type_list']) {
     if (Array.isArray(response?.[key])) return response[key];
     if (Array.isArray(response?.data?.[key])) return response.data[key];
   }
@@ -125,76 +124,51 @@ function formatTransaction(record) {
   return `🟢 Новая активность партнёра Gate\n${rows.map(([k, v]) => `${k}: ${formatValue(v)}`).join('\n')}`;
 }
 
-function decodeHtml(value) {
-  return value
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function isPromotionPath(pathname) {
-  return /\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:campaigns\/\d+|candy-drop\/detail\/[^/?#]+|referral\/earn-together|competition\/[^/?#]+|launchpool\/[^/?#]+)/i.test(pathname);
-}
-
-function extractPromotions(html, pageUrl) {
-  const cards = [];
-  const anchor = /<a\b[^>]*\bhref=(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/a>/gi;
-  let match;
-  while ((match = anchor.exec(html)) !== null) {
-    let url;
-    try { url = new URL(match[1] || match[2], pageUrl); } catch { continue; }
-    if (!isPromotionPath(url.pathname)) continue;
-    const id = `${url.origin}${url.pathname}`;
-    const text = decodeHtml(match[3]).slice(0, 700);
-    if (text) cards.push({ id, url: id, text });
-  }
-  const unique = new Map();
-  for (const card of cards) if (!unique.has(card.id)) unique.set(card.id, card);
-  return [...unique.values()];
-}
-
-function extractCategoryUrls(html, pageUrl) {
-  const urls = new Set();
-  const anchor = /<a\b[^>]*\bhref=(?:"([^"]+)"|'([^']+)')[^>]*>/gi;
-  let match;
-  while ((match = anchor.exec(html)) !== null) {
-    let url;
-    try { url = new URL(match[1] || match[2], pageUrl); } catch { continue; }
-    if (/\/rewards_hub\/activity-center-\d+-ongoing$/i.test(url.pathname)) {
-      urls.add(url.toString());
-    }
-  }
-  return [...urls];
-}
-
-async function fetchPromotionPage(pageUrl) {
-  const response = await fetch(pageUrl, {
-    headers: { Accept: 'text/html', 'User-Agent': 'GatePromotionNotifier/1.0' },
-  });
-  if (!response.ok) throw new Error(`Promotions page ${response.status}`);
-  return { html: await response.text(), url: response.url || pageUrl };
+function promotionFromActivity(activity) {
+  const rawId = activity.activity_id ?? activity.activityId ?? activity.id ?? activity.event_id ?? activity.eventId;
+  const id = rawId === undefined || rawId === null
+    ? `hash:${crypto.createHash('sha256').update(JSON.stringify(activity)).digest('hex')}`
+    : `activity:${rawId}`;
+  const rawUrl = activity.url ?? activity.jump_url ?? activity.jumpUrl ?? activity.activity_url ?? activity.activityUrl ?? activity.link;
+  let url = rawUrl || `https://www.gate.com/campaigns/${rawId}`;
+  try { url = new URL(url, 'https://www.gate.com').toString(); } catch { /* keep the API value for diagnostics */ }
+  const text = [
+    activity.name,
+    activity.activity_name,
+    activity.activityName,
+    activity.title,
+    activity.subtitle,
+    activity.sub_title,
+    activity.description,
+    activity.desc,
+  ].filter((value) => typeof value === 'string' && value.trim()).join('\n').slice(0, 700);
+  return { id, url, text: text || `Gate activity ${rawId}` };
 }
 
 async function getPromotions() {
-  // The Activity Center page lists all category tabs. Reading the links on
-  // every invocation means newly added Gate categories are included without a
-  // code or environment-variable update.
-  const centerUrl = process.env.PROMOTION_CENTER_URL || DEFAULT_PROMOTION_CENTER;
-  const center = await fetchPromotionPage(centerUrl);
-  const categoryUrls = [...new Set([center.url, ...extractCategoryUrls(center.html, center.url)])];
-  const pages = await Promise.all(categoryUrls.map(fetchPromotionPage));
-  const promotions = pages.flatMap((page) => extractPromotions(page.html, page.url));
-  if (promotions.length === 0) throw new Error('Promotions page returned no recognizable promotion cards');
+  // These are official authenticated API v4 endpoints. `activity-type` makes
+  // the category list dynamic, so Gate can add a new Activity Center sector
+  // without requiring a bot deployment.
+  const typeResponse = await gateGet('/rewards/activity/activity-type');
+  const types = recordsFrom(typeResponse);
+  const typeIds = types
+    .map((item) => item.type_id ?? item.typeId ?? item.id)
+    .filter((value) => value !== undefined && value !== null)
+    .join(',');
+  const activityResponse = await gateGet('/rewards/activity/activity-list', {
+    recommend_type: typeIds ? 'type' : undefined,
+    type_ids: typeIds || undefined,
+    page: 1,
+    page_size: 100,
+  });
+  const activities = recordsFrom(activityResponse);
+  if (activities.length === 0) throw new Error('Gate activity API returned no activities');
   const unique = new Map();
-  for (const promotion of promotions) if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
-  return { promotions: [...unique.values()], categories: categoryUrls };
+  for (const activity of activities) {
+    const promotion = promotionFromActivity(activity);
+    if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
+  }
+  return { promotions: [...unique.values()], categories: types };
 }
 
 function formatPromotion(promotion) {
