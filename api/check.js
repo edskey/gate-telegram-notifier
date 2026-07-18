@@ -153,15 +153,19 @@ async function getPromotions() {
   const types = recordsFrom(typeResponse);
   const typeIds = types
     .map((item) => item.type_id ?? item.typeId ?? item.id)
-    .filter((value) => value !== undefined && value !== null)
-    .join(',');
-  const activityResponse = await gateGet('/rewards/activity/activity-list', {
-    recommend_type: typeIds ? 'type' : undefined,
-    type_ids: typeIds || undefined,
-    page: 1,
-    page_size: 100,
-  });
-  const activities = recordsFrom(activityResponse);
+    .filter((value) => value !== undefined && value !== null);
+  // Gate currently rejects the signature when multiple type IDs are joined by
+  // commas in one query. One request per type avoids that ambiguity and also
+  // lets a newly introduced category fail independently during diagnostics.
+  const activityResponses = typeIds.length > 0
+    ? await Promise.all(typeIds.map((typeId) => gateGet('/rewards/activity/activity-list', {
+      recommend_type: 'type',
+      type_ids: typeId,
+      page: 1,
+      page_size: 100,
+    })))
+    : [await gateGet('/rewards/activity/activity-list', { page: 1, page_size: 100 })];
+  const activities = activityResponses.flatMap(recordsFrom);
   if (activities.length === 0) throw new Error('Gate activity API returned no activities');
   const unique = new Map();
   for (const activity of activities) {
