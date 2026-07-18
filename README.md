@@ -9,17 +9,18 @@ each one once to Telegram.
 - `GET`/`POST /api/check`: protected trigger endpoint.
 - Gate API v4 HMAC-SHA512 signing and a request to
   `/rebate/partner/transaction_history`.
-- Official Gate API v4 monitoring for the Activity Center. The API supplies
-  activity types and their recommended activities; no browser session, cookies,
-  or HTML parser is used.
+- GitHub Actions uses its preinstalled headless Chrome to read public Gate
+  Activity Center cards. It sends the extracted IDs, text, and links to the
+  protected Vercel endpoint; no account cookies or web session are used.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
 - GitHub Actions trigger every five minutes for Vercel Hobby.
 
-The bot queries Gate's official list of Activity Center types on every check,
-then requests activities across all of them. New Gate sectors therefore need no
-code or environment-variable update.
+The scheduler starts with the known Activity Center categories and discovers
+additional `activity-center-*-ongoing` links from the live page. It scans every
+category and deduplicates matching promotion links across sectors. The signed
+Gate API remains the separate source for Partner Activity transactions.
 
 ## Setup
 

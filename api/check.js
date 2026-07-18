@@ -218,6 +218,27 @@ function formatPromotionTest(promotion) {
   return `🧪 Тестовое уведомление — новая промо-акция Gate\n${promotion.text}\n\n${promotion.url}`;
 }
 
+function promotionsFromRequest(req) {
+  let body = req.body;
+  if (Buffer.isBuffer(body)) body = body.toString('utf8');
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return null; }
+  }
+  if (!body || !Array.isArray(body.promotions) || body.promotions.length === 0) return null;
+  const promotions = body.promotions.slice(0, MAX_SENT_IDS).map((item) => ({
+    id: String(item.id || item.url || '').slice(0, 1000),
+    url: String(item.url || '').slice(0, 2000),
+    text: String(item.text || '').slice(0, 900),
+  })).filter((item) => item.id && item.url && item.text);
+  if (promotions.length === 0) return null;
+  const categories = Array.isArray(body.categories) ? body.categories.slice(0, 100) : [];
+  return {
+    promotions,
+    categories,
+    sourceCounts: { scheduler_browser: promotions.length },
+  };
+}
+
 async function sendTelegram(text) {
   const response = await fetch(`https://api.telegram.org/bot${env('TELEGRAM_BOT_TOKEN')}/sendMessage`, {
     method: 'POST',
@@ -237,13 +258,14 @@ function initializeSource(state, name, currentIds) {
   return { sentIds: currentIds, initialized: true };
 }
 
-module.exports = async (req, res) => {
+async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     res.setHeader('Allow', 'GET, POST');
     return respond(res, 405, { error: 'method_not_allowed' });
   }
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
   const testNotification = req.headers['x-gate-bot-test'] === 'true';
+  const scheduledPromotions = promotionsFromRequest(req);
 
   let acquiredLock = false;
   try {
@@ -253,7 +275,7 @@ module.exports = async (req, res) => {
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
     const [activityResult, promotionResult, savedState] = await Promise.all([
       gateGet('/rebate/partner/transaction_history', { page: 1, limit }),
-      getPromotions(),
+      scheduledPromotions ? Promise.resolve(scheduledPromotions) : getPromotions(),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
       (value) => ({ ok: true, value }),
@@ -317,4 +339,7 @@ module.exports = async (req, res) => {
       try { await redis(['DEL', LOCK_KEY]); } catch (error) { console.error('Could not release lock', error); }
     }
   }
-};
+}
+
+module.exports = handler;
+module.exports._test = { promotionsFromRequest };

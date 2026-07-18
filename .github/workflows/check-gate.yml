@@ -11,12 +11,24 @@ on:
         default: false
         type: boolean
 
-permissions: {}
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-telegram-notifier-check
+  cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
+      - name: Checkout bot source
+        uses: actions/checkout@v4
+
+      - name: Collect Gate promotions in browser
+        run: node scripts/scrape-gate-promotions.js > /tmp/gate-promotions.json
+
       - name: Trigger protected Vercel check
         env:
           CHECK_URL: ${{ secrets.VERCEL_CHECK_URL }}
@@ -30,6 +42,9 @@ jobs:
             extra_header=(-H "X-Gate-Bot-Test: true")
           fi
           curl --fail-with-body --silent --show-error --max-time 20 \
+            -X POST \
             -H "Authorization: Bearer $CHECK_SECRET" \
+            -H "Content-Type: application/json" \
             "${extra_header[@]}" \
+            --data-binary @/tmp/gate-promotions.json \
             "$CHECK_URL"
