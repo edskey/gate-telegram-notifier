@@ -55,7 +55,7 @@ async function gateGet(path, params = {}) {
   let data;
   try { data = JSON.parse(text); } catch { data = text; }
   if (!response.ok) {
-    throw new Error(`Gate ${response.status}: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
+    throw new Error(`Gate ${apiPath} ${response.status}: ${typeof data === 'string' ? data : JSON.stringify(data)}`);
   }
   return data;
 }
