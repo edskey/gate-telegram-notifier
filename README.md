@@ -1,22 +1,24 @@
 # Gate partner Telegram notifier
 
-Serverless bot for **new Partner Activity transactions** on Gate. It uses a
-read-only Gate API v4 key, persists processed events in Upstash Redis, and sends
-each new transaction once to Telegram.
+Serverless bot for **new Gate promotion cards** and **new Partner Activity
+transactions**. It persists processed links/events in Upstash Redis and sends
+each one once to Telegram.
 
 ## What is implemented
 
 - `GET`/`POST /api/check`: protected trigger endpoint.
 - Gate API v4 HMAC-SHA512 signing and a request to
   `/rebate/partner/transaction_history`.
+- Public promotion monitoring for Gate's Activity Center. A new campaign card
+  link is the event trigger; no browser session or cookies are used.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
 - GitHub Actions trigger every five minutes for Vercel Hobby.
 
-The actual response fields and the relationship between Gate UI filters
-`activity_type=3&activity_status=1` and API filters must be confirmed with the
-partner key. The implementation deliberately does not guess those filters.
+The default promotion page is the currently selected Activity Center category
+(`activity-center-1-ongoing`). Change `PROMOTION_PAGE_URL` in Vercel when a
+different category becomes the desired source.
 
 ## Setup
 
@@ -39,8 +41,9 @@ partner key. The implementation deliberately does not guess those filters.
 6. In GitHub repository **Settings → Secrets and variables → Actions**, add:
    `VERCEL_CHECK_URL` (the URL above) and `CHECK_SECRET` (the same Vercel
    value). Enable Actions schedules if GitHub asks.
-7. Run the workflow manually once. A `200` response with `initialized: true`
-   proves Gate, Redis, and the endpoint work and creates the no-spam baseline.
+7. Run the workflow manually once. A `200` response with `initialized` entries
+   proves the sources, Redis, and endpoint work and creates the no-spam
+   baseline. Existing promotion cards are intentionally not published.
 
 ## Free-plan scheduling
 
@@ -50,10 +53,9 @@ interval. Scheduled Actions can be delayed; this bot therefore detects new
 transaction IDs instead of assuming exact five-minute execution. Do not set a
 Gate API-key IP allowlist for Vercel Hobby because its outgoing IP is dynamic.
 
-## Next validation step
+## Current promotion trigger
 
-After the read-only Gate key is ready, invoke `/api/check` manually once and
-inspect its Vercel function log/result. We will then map the real transaction
-fields and, if Gate supports it, add the precise equivalent of the UI's status
-and type filters. Rewards Hub requires a separate authenticated API check; its
-"claimable" status is not established by this project yet.
+The bot treats a newly appearing promotion-card link (for example,
+`/campaigns/5534`) as a new promotion. It sends the card text and direct URL to
+Telegram. Channel formatting can be changed independently without affecting the
+deduplication rule.

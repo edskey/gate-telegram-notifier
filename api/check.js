@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 
 const GATE_PREFIX = '/api/v4';
-const STATE_KEY = 'gate-partner-bot:sent-transaction-ids:v1';
+const STATE_KEY = 'gate-partner-bot:state:v2';
 const LOCK_KEY = 'gate-partner-bot:check-lock:v1';
 const MAX_SENT_IDS = 500;
+const DEFAULT_PROMOTION_PAGE = 'https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing';
 
 function env(name, required = true) {
   const value = process.env[name];
@@ -99,9 +100,11 @@ function eventId(record) {
   for (const key of ['id', 'transaction_id', 'trade_id', 'record_id', 'order_id']) {
     if (record?.[key] !== undefined && record[key] !== null) return `${key}:${record[key]}`;
   }
-  // A fallback keeps the bot usable if Gate returns a new response shape. The
-  // real API response will be inspected before production alerts are enabled.
   return `hash:${crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex')}`;
+}
+
+function uniqueIds(ids) {
+  return [...new Set(ids)].slice(0, MAX_SENT_IDS);
 }
 
 function formatValue(value) {
@@ -122,6 +125,56 @@ function formatTransaction(record) {
   return `🟢 Новая активность партнёра Gate\n${rows.map(([k, v]) => `${k}: ${formatValue(v)}`).join('\n')}`;
 }
 
+function decodeHtml(value) {
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isPromotionPath(pathname) {
+  return /\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?:campaigns\/\d+|candy-drop\/detail\/[^/?#]+|referral\/earn-together|competition\/[^/?#]+|launchpool\/[^/?#]+)/i.test(pathname);
+}
+
+function extractPromotions(html, pageUrl) {
+  const cards = [];
+  const anchor = /<a\b[^>]*\bhref=(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = anchor.exec(html)) !== null) {
+    let url;
+    try { url = new URL(match[1] || match[2], pageUrl); } catch { continue; }
+    if (!isPromotionPath(url.pathname)) continue;
+    const id = `${url.origin}${url.pathname}`;
+    const text = decodeHtml(match[3]).slice(0, 700);
+    if (text) cards.push({ id, url: id, text });
+  }
+  const unique = new Map();
+  for (const card of cards) if (!unique.has(card.id)) unique.set(card.id, card);
+  return [...unique.values()];
+}
+
+async function getPromotions() {
+  const pageUrl = process.env.PROMOTION_PAGE_URL || DEFAULT_PROMOTION_PAGE;
+  const response = await fetch(pageUrl, {
+    headers: { Accept: 'text/html', 'User-Agent': 'GatePromotionNotifier/1.0' },
+  });
+  if (!response.ok) throw new Error(`Promotions page ${response.status}`);
+  const promotions = extractPromotions(await response.text(), pageUrl);
+  if (promotions.length === 0) throw new Error('Promotions page returned no recognizable promotion cards');
+  return promotions;
+}
+
+function formatPromotion(promotion) {
+  return `🆕 Новая промо-акция Gate\n${promotion.text}\n\n${promotion.url}`;
+}
+
 async function sendTelegram(text) {
   const response = await fetch(`https://api.telegram.org/bot${env('TELEGRAM_BOT_TOKEN')}/sendMessage`, {
     method: 'POST',
@@ -130,6 +183,15 @@ async function sendTelegram(text) {
   });
   const body = await response.json();
   if (!response.ok || !body.ok) throw new Error(`Telegram: ${body.description || response.status}`);
+}
+
+function initializeSource(state, name, currentIds) {
+  const legacyTransactionIds = name === 'transactions' ? state?.sentIds : undefined;
+  const source = state?.[name];
+  if (source?.sentIds || legacyTransactionIds) {
+    return { sentIds: source?.sentIds || legacyTransactionIds, initialized: false };
+  }
+  return { sentIds: currentIds, initialized: true };
 }
 
 module.exports = async (req, res) => {
@@ -141,30 +203,62 @@ module.exports = async (req, res) => {
 
   let acquiredLock = false;
   try {
-    // A scheduler retry can overlap the previous invocation. Redis makes this
-    // lock atomic, so two functions cannot notify about the same fresh record.
     acquiredLock = (await redis(['SET', LOCK_KEY, '1', 'NX', 'EX', 30])) === 'OK';
     if (!acquiredLock) return respond(res, 202, { ok: true, skipped: 'check_already_running' });
 
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
-    const response = await gateGet('/rebate/partner/transaction_history', { page: 1, limit });
-    const records = recordsFrom(response);
-    const currentIds = records.map(eventId);
-    const state = await loadState();
+    const [activityResult, promotionResult, savedState] = await Promise.all([
+      gateGet('/rebate/partner/transaction_history', { page: 1, limit }),
+      getPromotions(),
+      loadState(),
+    ].map((promise) => Promise.resolve(promise).then(
+      (value) => ({ ok: true, value }),
+      (error) => ({ ok: false, error })
+    )));
 
-    // First successful run establishes a baseline. This intentionally avoids a
-    // flood of old notifications after deploying the bot.
-    if (!state) {
-      await saveState({ sentIds: currentIds.slice(0, MAX_SENT_IDS), initializedAt: new Date().toISOString() });
-      return respond(res, 200, { ok: true, initialized: true, records: records.length, sent: 0 });
+    const state = savedState.ok && savedState.value ? savedState.value : {};
+    const result = { ok: true, initialized: [], sent: { transactions: 0, promotions: 0 }, errors: {} };
+    const messages = [];
+
+    if (activityResult.ok) {
+      const records = recordsFrom(activityResult.value);
+      const currentIds = records.map(eventId);
+      const known = initializeSource(state, 'transactions', currentIds);
+      if (known.initialized) result.initialized.push('transactions');
+      const seen = new Set(known.sentIds || []);
+      const fresh = known.initialized ? [] : records.filter((record) => !seen.has(eventId(record)));
+      messages.push(...fresh.reverse().map((record) => formatTransaction(record)));
+      state.transactions = { sentIds: uniqueIds([...currentIds, ...(known.sentIds || [])]) };
+      result.transactions = records.length;
+      result.sent.transactions = fresh.length;
+    } else {
+      result.errors.transactions = activityResult.error.message;
     }
 
-    const seen = new Set(state.sentIds || []);
-    const fresh = records.filter((record) => !seen.has(eventId(record)));
-    for (const record of fresh.reverse()) await sendTelegram(formatTransaction(record));
-    const sentIds = [...currentIds, ...(state.sentIds || [])].filter((id, index, all) => all.indexOf(id) === index).slice(0, MAX_SENT_IDS);
-    await saveState({ sentIds, initializedAt: state.initializedAt, checkedAt: new Date().toISOString() });
-    return respond(res, 200, { ok: true, initialized: false, records: records.length, sent: fresh.length });
+    if (promotionResult.ok) {
+      const promotions = promotionResult.value;
+      const currentIds = promotions.map((promotion) => promotion.id);
+      const known = initializeSource(state, 'promotions', currentIds);
+      if (known.initialized) result.initialized.push('promotions');
+      const seen = new Set(known.sentIds || []);
+      const fresh = known.initialized ? [] : promotions.filter((promotion) => !seen.has(promotion.id));
+      messages.push(...fresh.reverse().map((promotion) => formatPromotion(promotion)));
+      state.promotions = { sentIds: uniqueIds([...currentIds, ...(known.sentIds || [])]) };
+      result.promotions = promotions.length;
+      result.sent.promotions = fresh.length;
+    } else {
+      result.errors.promotions = promotionResult.error.message;
+    }
+
+    if (!activityResult.ok && !promotionResult.ok) {
+      return respond(res, 502, { ...result, ok: false });
+    }
+
+    state.initializedAt = state.initializedAt || new Date().toISOString();
+    state.checkedAt = new Date().toISOString();
+    await saveState(state);
+    for (const message of messages) await sendTelegram(message);
+    return respond(res, 200, result);
   } catch (error) {
     console.error(error);
     return respond(res, 500, { ok: false, error: error.message });
