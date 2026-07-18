@@ -240,13 +240,25 @@ function promotionsFromRequest(req) {
 }
 
 async function sendTelegram(text) {
-  const response = await fetch(`https://api.telegram.org/bot${env('TELEGRAM_BOT_TOKEN')}/sendMessage`, {
+  const token = env('TELEGRAM_BOT_TOKEN').trim();
+  const chatId = env('TELEGRAM_CHAT_ID').trim();
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: env('TELEGRAM_CHAT_ID'), text }),
+    body: JSON.stringify({ chat_id: chatId, text }),
   });
   const body = await response.json();
-  if (!response.ok || !body.ok) throw new Error(`Telegram: ${body.description || response.status}`);
+  if (!response.ok || !body.ok) {
+    let botName = 'unknown';
+    try {
+      const identityResponse = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const identity = await identityResponse.json();
+      if (identity.ok && identity.result?.username) botName = `@${identity.result.username}`;
+    } catch { /* keep the original Telegram error */ }
+    throw new Error(
+      `Telegram sendMessage: ${body.description || response.status}; bot=${botName}; chat=${JSON.stringify(chatId)}`
+    );
+  }
 }
 
 function initializeSource(state, name, currentIds) {

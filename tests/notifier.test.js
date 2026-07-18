@@ -30,7 +30,7 @@ test('protected POST uses scheduler promotions and sends a test to a channel', a
     UPSTASH_REDIS_REST_URL: 'https://redis.test',
     UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
     TELEGRAM_BOT_TOKEN: 'test-telegram-token',
-    TELEGRAM_CHAT_ID: '-1004344864116',
+    TELEGRAM_CHAT_ID: '  @ggwp_announcements  ',
   });
 
   const telegramBodies = [];
@@ -85,7 +85,7 @@ test('protected POST uses scheduler promotions and sends a test to a channel', a
   assert.equal(responseBody.transactions, 4);
   assert.equal(responseBody.testNotification, true);
   assert.equal(telegramBodies.length, 1);
-  assert.equal(telegramBodies[0].chat_id, '-1004344864116');
+  assert.equal(telegramBodies[0].chat_id, '@ggwp_announcements');
   assert.match(telegramBodies[0].text, /Тестовое уведомление/);
   assert.match(telegramBodies[0].text, /Карнавал прогнозов/);
   assert.deepEqual(sideEffects, ['send-telegram', 'save-state']);
