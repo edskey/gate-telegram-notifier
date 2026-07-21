@@ -193,7 +193,7 @@ async function formatCandyDrop(candyDrop, isTest = false) {
       ? 'Вычисляем мануально, там кендики, я бот, меня починят'
       : formatNumber(fixed.totalAmount / fixed.individualCap, 2);
     rows.push(
-      `🔵 <b>Награда:</b> <b>${escapeTelegramHtml(reward)}</b>`,
+      `🔵 <b>Фикс награда:</b> <b>${escapeTelegramHtml(reward)}</b>`,
       `🔵 <b>Мест в палате:</b> ${escapeTelegramHtml(places)}`
     );
   }
@@ -262,13 +262,18 @@ function candyDropsFromRequest(req) {
   return { candyDrops, fixedCandyDropTest };
 }
 
-async function sendTelegram(text) {
+async function sendTelegram(text, { silent = false } = {}) {
   const token = env('TELEGRAM_BOT_TOKEN').trim();
   const chatId = env('TELEGRAM_CHAT_ID').trim();
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: 'HTML',
+      disable_notification: silent,
+    }),
   });
   const body = await response.json();
   if (!response.ok || !body.ok) {
@@ -428,9 +433,13 @@ async function handler(req, res) {
     }
     state.checkedAt = new Date().toISOString();
     await saveState(state);
-    for (const promotion of testPromotions) await sendTelegram(formatPromotionTest(promotion));
-    for (const candyDrop of testCandyDrops) await sendTelegram(await formatCandyDrop(candyDrop, true));
-    if (fixedCandyDropTest) await sendTelegram(await formatCandyDrop(fixedCandyDropTest, true));
+    for (const promotion of testPromotions) await sendTelegram(formatPromotionTest(promotion), { silent: true });
+    for (const candyDrop of testCandyDrops) {
+      await sendTelegram(await formatCandyDrop(candyDrop, true), { silent: true });
+    }
+    if (fixedCandyDropTest) {
+      await sendTelegram(await formatCandyDrop(fixedCandyDropTest, true), { silent: true });
+    }
     const hasErrors = Object.keys(result.errors).length > 0;
     result.ok = !hasErrors;
     return respond(res, hasErrors ? 502 : 200, result);

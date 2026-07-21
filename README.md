@@ -72,7 +72,8 @@ To verify Telegram delivery without waiting for a new campaign, manually run
 the GitHub Action and tick `test_notification`. It posts one existing Rewards
 Hub card, when available one CandyDrop Upcoming card, and the completed RLUSD
 Fixed Rewards example as three separate test messages; it does not alter saved
-IDs. If several genuinely new cards appear
+IDs. Test messages are sent silently; genuine new-promotion alerts retain normal
+Telegram notifications. If several genuinely new cards appear
 between checks, each is also sent as a separate message. Delivery state is
 checkpointed after every accepted message, so a partial Telegram failure
 retries only the remaining items.

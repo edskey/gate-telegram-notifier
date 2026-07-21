@@ -201,12 +201,13 @@ test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test message
   assert.match(telegramBodies[1].text, /🔵 Бабки не проблема \(пул\): <b>1 000 SKHYG ≈ 171 350 USDT<\/b>/);
   assert.match(telegramBodies[1].text, /🔵 <b>Тип кендика:<\/b> Разделите награды и Зафиксированные награды/);
   assert.match(telegramBodies[1].text, /<b><u>Ебашим через: 08:01:48<\/u><\/b>/);
-  assert.match(telegramBodies[1].text, /Награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
+  assert.match(telegramBodies[1].text, /Фикс награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
   assert.match(telegramBodies[1].text, /Мест в палате:<\/b> Вычисляем мануально, там кендики, я бот, меня починят/);
   assert.match(telegramBodies[1].text, />Открыть CandyDrop<\/a>/);
   assert.match(telegramBodies[2].text, /^👇 <b>Тест CandyDrop Fixed Rewards<\/b>/);
-  assert.match(telegramBodies[2].text, /Награда:<\/b> <b>5 RLUSD ≈ \$5<\/b>/);
+  assert.match(telegramBodies[2].text, /Фикс награда:<\/b> <b>5 RLUSD ≈ \$5<\/b>/);
   assert.match(telegramBodies[2].text, /Мест в палате:<\/b> 4\s?500/);
+  assert(telegramBodies.every((body) => body.disable_notification === true));
   assert.deepEqual(sideEffects, [
     'save-state',
     'save-state',
@@ -398,6 +399,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert(messages.some((message) => message.text.includes('NEW1')));
   assert(messages.some((message) => message.text.includes('NEW2')));
   assert(messages.every((message) => message.text.startsWith('👇')));
+  assert(messages.every((message) => message.disable_notification === false));
 
   const second = await invoke();
   assert.equal(second.status, 200);
