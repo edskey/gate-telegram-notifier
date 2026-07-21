@@ -134,12 +134,27 @@ function escapeTelegramHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+function promotionContent(promotion) {
+  const timerPattern = /(?:Обратный отсчет|Countdown|Ends? in)\s*:?\s*([0-9Dд:\s]+)/i;
+  const timerMatch = String(promotion.text).match(timerPattern);
+  const timer = timerMatch
+    ? timerMatch[1].replace(/\s*:\s*/g, ':').replace(/\s+/g, ' ').trim()
+    : 'время не найдено';
+  const text = String(promotion.text).replace(timerPattern, ' ').replace(/\s+/g, ' ').trim();
+  return [
+    escapeTelegramHtml(text),
+    `🔵 <b><u>Ебашим через: ${escapeTelegramHtml(timer)}</u></b>`,
+    '',
+    `🔵 <a href="${escapeTelegramHtml(promotion.url)}"><b>Промка</b></a>`,
+  ].join('\n');
+}
+
 function formatPromotion(promotion) {
-  return `🆕 <b>Новая промоакция Gate</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
+  return `🆕 <b>Новая промоакция Gate</b>\n\n${promotionContent(promotion)}`;
 }
 
 function formatPromotionTest(promotion) {
-  return `🧪 <b>Тест уведомления Rewards Hub</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
+  return `🧪 <b>Тест уведомления Rewards Hub</b>\n\n${promotionContent(promotion)}`;
 }
 
 async function coinGeckoUsdPrice(symbol) {
@@ -197,7 +212,7 @@ async function formatCandyDrop(candyDrop, isTest = false) {
       `🔵 <b>Мест в палате:</b> ${escapeTelegramHtml(places)}`
     );
   }
-  rows.push('', `🔗 <a href="${escapeTelegramHtml(candyDrop.url)}">Открыть CandyDrop</a>`);
+  rows.push('', `🔵 <a href="${escapeTelegramHtml(candyDrop.url)}"><b>Промка</b></a>`);
   return rows.join('\n');
 }
 
