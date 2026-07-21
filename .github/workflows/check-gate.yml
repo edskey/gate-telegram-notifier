@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       test_notification:
-        description: 'Send up to three clearly marked test promotion notifications'
+        description: 'Send one Rewards Hub test and one CandyDrop Upcoming test'
         required: false
         default: false
         type: boolean

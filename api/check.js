@@ -138,16 +138,35 @@ function formatPromotion(promotion) {
   return `🆕 <b>Новая промоакция Gate</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
 }
 
-function formatPromotionTest(promotion, index, total) {
-  return `🧪 <b>Тест уведомления ${index}/${total}</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
+function formatPromotionTest(promotion) {
+  return `🧪 <b>Тест уведомления Rewards Hub</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
 }
 
-function promotionsFromRequest(req) {
+function formatCandyDrop(candyDrop, isTest = false) {
+  const heading = isTest ? 'Тест CandyDrop Upcoming' : 'Новый CandyDrop Upcoming';
+  return [
+    `👇 <b>${heading}</b>`,
+    '',
+    `🔵 <b>Проект:</b> ${escapeTelegramHtml(candyDrop.name)}`,
+    `🔵 Бабки не проблема (пул): <b>${escapeTelegramHtml(candyDrop.pool)}</b>`,
+    `🔵 <b>Тип кендика:</b> ${escapeTelegramHtml(candyDrop.candyType)}`,
+    `🔵 <b><u>Ебашим через: ${escapeTelegramHtml(candyDrop.startIn)}</u></b>`,
+    '',
+    `🔗 <a href="${escapeTelegramHtml(candyDrop.url)}">Открыть CandyDrop</a>`,
+  ].join('\n');
+}
+
+function requestBody(req) {
   let body = req.body;
   if (Buffer.isBuffer(body)) body = body.toString('utf8');
   if (typeof body === 'string') {
     try { body = JSON.parse(body); } catch { return null; }
   }
+  return body && typeof body === 'object' ? body : null;
+}
+
+function promotionsFromRequest(req) {
+  const body = requestBody(req);
   if (!body || !Array.isArray(body.promotions) || body.promotions.length === 0) return null;
   const promotions = body.promotions.slice(0, MAX_SENT_IDS).map((item) => ({
     id: String(item.id || item.url || '').slice(0, 1000),
@@ -161,6 +180,21 @@ function promotionsFromRequest(req) {
     categories,
     sourceCounts: { scheduler_browser: promotions.length },
   };
+}
+
+function candyDropsFromRequest(req) {
+  const body = requestBody(req);
+  if (!body || !Array.isArray(body.candyDrops)) return null;
+  const candyDrops = body.candyDrops.slice(0, MAX_SENT_IDS).map((item) => ({
+    id: String(item.id || item.url || '').slice(0, 1000),
+    url: String(item.url || '').slice(0, 2000),
+    name: String(item.name || '').slice(0, 200),
+    pool: String(item.pool || '').slice(0, 300),
+    candyType: String(item.candyType || '').slice(0, 300),
+    startIn: String(item.startIn || '').slice(0, 100),
+  })).filter((item) => item.id && item.url && item.name && item.pool && item.candyType && item.startIn);
+  if (candyDrops.length !== body.candyDrops.slice(0, MAX_SENT_IDS).length) return null;
+  return { candyDrops };
 }
 
 async function sendTelegram(text) {
@@ -202,6 +236,7 @@ async function handler(req, res) {
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
   const testNotification = req.headers['x-gate-bot-test'] === 'true';
   const scheduledPromotions = promotionsFromRequest(req);
+  const scheduledCandyDrops = candyDropsFromRequest(req);
 
   let acquiredLock = false;
   try {
@@ -209,11 +244,14 @@ async function handler(req, res) {
     if (!acquiredLock) return respond(res, 202, { ok: true, skipped: 'check_already_running' });
 
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
-    const [activityResult, promotionResult, savedState] = await Promise.all([
+    const [activityResult, promotionResult, candyDropResult, savedState] = await Promise.all([
       gateGet('/rebate/partner/transaction_history', { page: 1, limit }),
       scheduledPromotions
         ? Promise.resolve(scheduledPromotions)
         : Promise.reject(new Error('Promotion payload from scheduler browser is missing or empty')),
+      scheduledCandyDrops
+        ? Promise.resolve(scheduledCandyDrops)
+        : Promise.reject(new Error('CandyDrop payload from scheduler browser is missing or invalid')),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
       (value) => ({ ok: true, value }),
@@ -221,10 +259,16 @@ async function handler(req, res) {
     )));
 
     const state = savedState.ok && savedState.value ? savedState.value : {};
-    const result = { ok: true, initialized: [], sent: { transactions: 0, promotions: 0 }, errors: {} };
+    const result = {
+      ok: true,
+      initialized: [],
+      sent: { transactions: 0, promotions: 0, candyDrops: 0 },
+      errors: {},
+    };
     const deliveries = [];
     const currentIdsBySource = {};
     let testPromotions = [];
+    let testCandyDrops = [];
 
     if (activityResult.ok) {
       const records = recordsFrom(activityResult.value);
@@ -265,16 +309,36 @@ async function handler(req, res) {
       result.promotionSources = sourceCounts;
       result.sent.promotions = fresh.length;
       if (testNotification) {
-        testPromotions = promotions.slice(0, 3);
-        result.testNotification = true;
-        result.testNotifications = testPromotions.length;
+        testPromotions = promotions.slice(0, 1);
       }
     } else {
       result.errors.promotions = promotionResult.error.message;
     }
 
-    if (!activityResult.ok && !promotionResult.ok) {
-      return respond(res, 502, { ...result, ok: false });
+    if (candyDropResult.ok) {
+      const { candyDrops } = candyDropResult.value;
+      const currentIds = candyDrops.map((candyDrop) => candyDrop.id);
+      const known = initializeSource(state, 'candyDrops', currentIds);
+      if (known.initialized) result.initialized.push('candyDrops');
+      const seen = new Set(known.sentIds || []);
+      const fresh = known.initialized ? [] : candyDrops.filter((candyDrop) => !seen.has(candyDrop.id));
+      deliveries.push(...fresh.reverse().map((candyDrop) => ({
+        source: 'candyDrops',
+        id: candyDrop.id,
+        text: formatCandyDrop(candyDrop),
+      })));
+      state.candyDrops = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.candyDrops = currentIds;
+      result.candyDrops = candyDrops.length;
+      result.sent.candyDrops = fresh.length;
+      if (testNotification) testCandyDrops = candyDrops.slice(0, 1);
+    } else {
+      result.errors.candyDrops = candyDropResult.error.message;
+    }
+
+    if (testNotification) {
+      result.testNotification = true;
+      result.testNotifications = testPromotions.length + testCandyDrops.length;
     }
 
     state.initializedAt = state.initializedAt || new Date().toISOString();
@@ -297,10 +361,11 @@ async function handler(req, res) {
     }
     state.checkedAt = new Date().toISOString();
     await saveState(state);
-    for (const [index, promotion] of testPromotions.entries()) {
-      await sendTelegram(formatPromotionTest(promotion, index + 1, testPromotions.length));
-    }
-    return respond(res, 200, result);
+    for (const promotion of testPromotions) await sendTelegram(formatPromotionTest(promotion));
+    for (const candyDrop of testCandyDrops) await sendTelegram(formatCandyDrop(candyDrop, true));
+    const hasErrors = Object.keys(result.errors).length > 0;
+    result.ok = !hasErrors;
+    return respond(res, hasErrors ? 502 : 200, result);
   } catch (error) {
     console.error(error);
     return respond(res, 500, { ok: false, error: error.message });

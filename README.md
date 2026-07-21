@@ -1,8 +1,8 @@
 # Gate partner Telegram notifier
 
-Serverless bot for **new Gate promotion cards** and **new Partner Activity
-transactions**. It persists processed links/events in Upstash Redis and sends
-each one once to Telegram.
+Serverless bot for **new Gate promotion cards**, **CandyDrop Upcoming cards**,
+and **new Partner Activity transactions**. It persists processed links/events
+in Upstash Redis and sends each one once to Telegram.
 
 ## What is implemented
 
@@ -12,6 +12,9 @@ each one once to Telegram.
 - GitHub Actions uses its preinstalled headless Chrome to read public Gate
   Activity Center cards. It sends the extracted IDs, text, and links to the
   protected Vercel endpoint; no account cookies or web session are used.
+- The same public browser run checks CandyDrop and keeps only cards marked
+  `Start in`/`Upcoming`. It extracts the reward pool, reward type, countdown,
+  and detail link into a separate deduplication source.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
@@ -63,9 +66,9 @@ Telegram. Channel formatting can be changed independently without affecting the
 deduplication rule.
 
 To verify Telegram delivery without waiting for a new campaign, manually run
-the GitHub Action and tick `test_notification`. It posts up to three existing
-promotion cards as separate, numbered test messages; it does not alter the
-saved list of promotion IDs. If several genuinely new promotions appear between
-checks, each is also sent as a separate message. Delivery state is checkpointed
-after every accepted message, so a partial Telegram failure retries only the
-remaining items.
+the GitHub Action and tick `test_notification`. It posts one existing Rewards
+Hub card and, when available, one CandyDrop Upcoming card as separate test
+messages; it does not alter saved IDs. If several genuinely new cards appear
+between checks, each is also sent as a separate message. Delivery state is
+checkpointed after every accepted message, so a partial Telegram failure
+retries only the remaining items.

@@ -3,6 +3,7 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
+const CANDY_DROP_URL = `${ORIGIN}/en/candy-drop`;
 const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
   .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
@@ -67,7 +68,7 @@ function discoverCategories(html) {
 }
 
 function isPromotionLink(url, text) {
-  if (/\/(?:campaigns\/\d+|candy-drop\/detail\/[^/?#]+|referral\/earn-together|competition\/[^/?#]+|launchpool\/[^/?#]+)/i.test(url.pathname)) {
+  if (/\/(?:campaigns\/\d+|referral\/earn-together|competition\/[^/?#]+|launchpool\/[^/?#]+)/i.test(url.pathname)) {
     return true;
   }
   return /(?:Обратный отсчет|Countdown|Ends? in)/i.test(text) && !/activity-center-/i.test(url.pathname);
@@ -88,6 +89,69 @@ function extractPromotions(html) {
   return promotions;
 }
 
+function balancedDiv(html, startIndex) {
+  const divPattern = /<\/?div\b[^>]*>/gi;
+  divPattern.lastIndex = startIndex;
+  let depth = 0;
+  let match;
+  while ((match = divPattern.exec(html)) !== null) {
+    if (/^<\/div/i.test(match[0])) depth -= 1;
+    else depth += 1;
+    if (depth === 0) return html.slice(startIndex, divPattern.lastIndex);
+  }
+  return null;
+}
+
+function normalizeTimer(value) {
+  return value
+    .replace(/\s*:\s*/g, ':')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractCandyDrops(html) {
+  const candyDrops = [];
+  const cardPattern = /<div\b[^>]*class=(?:"[^"]*\bcursor-pointer\b[^"]*"|'[^']*\bcursor-pointer\b[^']*')[^>]*>/gi;
+  let cardStart;
+  while ((cardStart = cardPattern.exec(html)) !== null) {
+    const cardHtml = balancedDiv(html, cardStart.index);
+    if (!cardHtml) continue;
+    const linkMatch = cardHtml.match(/<a\b[^>]*href=(?:"([^"]*\/candy-drop\/detail\/[^"]+)"|'([^']*\/candy-drop\/detail\/[^']+)')[^>]*>([\s\S]*?)<\/a>/i);
+    if (!linkMatch) continue;
+    const text = decodeHtml(cardHtml);
+    if (!/(?:Start(?:s)? in|Начинается в)/i.test(text)) continue;
+
+    const rawHref = linkMatch[1] || linkMatch[2];
+    let parsedUrl;
+    try { parsedUrl = new URL(rawHref, ORIGIN); } catch { continue; }
+    const slugMatch = parsedUrl.pathname.match(/\/candy-drop\/detail\/([^/?#]+)/i);
+    if (!slugMatch) continue;
+    const slug = slugMatch[1];
+    const name = decodeHtml(linkMatch[3]).trim();
+    const poolMatch = text.match(/([0-9][0-9\s.,]*\s+[$A-Z][A-Z0-9._-]*)\s*≈\s*([0-9][0-9\s.,]*\s+USDT)/i);
+    const timerMatch = text.match(/(?:Start(?:s)? in|Начинается в)\s+([0-9Dд:\s]+)/i);
+    const hasShared = /(?:Share(?:d)? Rewards|Разделите награды)/i.test(text);
+    const hasFixed = /(?:Fixed Rewards|Зафиксированные награды)/i.test(text);
+    const candyTypes = [
+      hasShared ? 'Разделите награды' : null,
+      hasFixed ? 'Зафиксированные награды' : null,
+    ].filter(Boolean);
+
+    if (!name || !poolMatch || !timerMatch || candyTypes.length === 0) {
+      throw new Error(`Could not parse every Upcoming CandyDrop field for ${slug}`);
+    }
+    candyDrops.push({
+      id: `candy:${slug}`,
+      url: `${ORIGIN}/en/candy-drop/detail/${slug}`,
+      name: name.slice(0, 200),
+      pool: `${poolMatch[1]} ≈ ${poolMatch[2]}`.replace(/\s+/g, ' ').trim(),
+      candyType: candyTypes.join(' и '),
+      startIn: normalizeTimer(timerMatch[1]),
+    });
+  }
+  return candyDrops;
+}
+
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length);
   let next = 0;
@@ -106,7 +170,11 @@ async function main() {
   const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
   const categories = discoverCategories(firstHtml);
   const remaining = categories.filter((url) => url !== KNOWN_CATEGORIES[0]);
-  const htmlPages = [firstHtml, ...(await mapWithConcurrency(remaining, 3, (url) => dumpPage(chrome, url)))];
+  const [remainingPages, candyHtml] = await Promise.all([
+    mapWithConcurrency(remaining, 3, (url) => dumpPage(chrome, url)),
+    dumpPage(chrome, CANDY_DROP_URL),
+  ]);
+  const htmlPages = [firstHtml, ...remainingPages];
   const unique = new Map();
   for (const html of htmlPages) {
     for (const promotion of extractPromotions(html)) {
@@ -114,8 +182,14 @@ async function main() {
     }
   }
   if (unique.size === 0) throw new Error('Headless Chrome found no Gate promotion cards');
-  process.stderr.write(`Discovered ${categories.length} categories and ${unique.size} promotions\n`);
-  process.stdout.write(JSON.stringify({ promotions: [...unique.values()], categories }));
+  if (!/(?:Upcoming|Предстоящие)/i.test(decodeHtml(candyHtml))) {
+    throw new Error('Headless Chrome could not verify the CandyDrop Upcoming section');
+  }
+  const candyDrops = extractCandyDrops(candyHtml);
+  process.stderr.write(
+    `Discovered ${categories.length} categories, ${unique.size} promotions, and ${candyDrops.length} Upcoming CandyDrops\n`
+  );
+  process.stdout.write(JSON.stringify({ promotions: [...unique.values()], candyDrops, categories }));
 }
 
 if (require.main === module) {
@@ -125,4 +199,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { decodeHtml, discoverCategories, extractPromotions };
+module.exports = { decodeHtml, discoverCategories, extractCandyDrops, extractPromotions };

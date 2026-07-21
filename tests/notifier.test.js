@@ -1,7 +1,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { discoverCategories, extractPromotions } = require('../scripts/scrape-gate-promotions');
+const {
+  discoverCategories,
+  extractCandyDrops,
+  extractPromotions,
+} = require('../scripts/scrape-gate-promotions');
 const handler = require('../api/check');
 
 test('check endpoint rejects an invalid secret before external calls', async (context) => {
@@ -43,7 +47,32 @@ test('scraper discovers new sectors and extracts stable promotion links', () => 
   }]);
 });
 
-test('protected POST sends three formatted test promotions as separate messages', async (context) => {
+test('scraper extracts only Upcoming CandyDrops with pool, type, and timer', () => {
+  const html = `
+    <div class="relative grid cursor-pointer">
+      <div><h3><a href="/candy-drop/detail/SKHYG-350">SKHYG</a></h3>
+        <span>Share Rewards</span><span>Fixed Rewards</span>
+        <div>1 000 SKHYG</div><div>≈ 171 350 USDT</div>
+      </div>
+      <div>Task Type Futures Invite Friends</div>
+      <div>Start in <span>08</span> : <span>01</span> : <span>48</span></div>
+    </div>
+    <div class="relative grid cursor-pointer">
+      <h3><a href="/candy-drop/detail/OLD-1">OLD</a></h3>
+      <span>Share Rewards</span><div>100 OLD ≈ 10 USDT</div><div>Ended</div>
+    </div>`;
+
+  assert.deepEqual(extractCandyDrops(html), [{
+    id: 'candy:SKHYG-350',
+    url: 'https://www.gate.com/en/candy-drop/detail/SKHYG-350',
+    name: 'SKHYG',
+    pool: '1 000 SKHYG ≈ 171 350 USDT',
+    candyType: 'Разделите награды и Зафиксированные награды',
+    startIn: '08:01:48',
+  }]);
+});
+
+test('protected POST sends one Rewards Hub and one CandyDrop test message', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',
     GATE_API_KEY: 'test-gate-key',
@@ -100,6 +129,14 @@ test('protected POST sends three formatted test promotions as separate messages'
           text: 'Третья тестовая акция',
         },
       ],
+      candyDrops: [{
+        id: 'candy:SKHYG-350',
+        url: 'https://www.gate.com/en/candy-drop/detail/SKHYG-350',
+        name: 'SKHYG',
+        pool: '1 000 SKHYG ≈ 171 350 USDT',
+        candyType: 'Разделите награды и Зафиксированные награды',
+        startIn: '08:01:48',
+      }],
       categories: ['https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing'],
     },
   };
@@ -117,19 +154,21 @@ test('protected POST sends three formatted test promotions as separate messages'
   assert.equal(responseBody.promotions, 3);
   assert.equal(responseBody.transactions, 4);
   assert.equal(responseBody.testNotification, true);
-  assert.equal(responseBody.testNotifications, 3);
-  assert.equal(telegramBodies.length, 3);
+  assert.equal(responseBody.candyDrops, 1);
+  assert.equal(responseBody.testNotifications, 2);
+  assert.equal(telegramBodies.length, 2);
   assert.equal(telegramBodies[0].chat_id, '@ggwp_announcements');
   assert.equal(telegramBodies[0].parse_mode, 'HTML');
-  assert.match(telegramBodies[0].text, /Тест уведомления 1\/3/);
+  assert.match(telegramBodies[0].text, /Тест уведомления Rewards Hub/);
   assert.match(telegramBodies[0].text, /Карнавал прогнозов/);
-  assert.match(telegramBodies[1].text, /A &amp; B &lt;Special&gt;/);
-  assert.match(telegramBodies[2].text, /Тест уведомления 3\/3/);
-  assert(telegramBodies.every((body) => body.text.includes('>Открыть акцию</a>')));
+  assert.match(telegramBodies[1].text, /^👇 <b>Тест CandyDrop Upcoming<\/b>/);
+  assert.match(telegramBodies[1].text, /🔵 Бабки не проблема \(пул\): <b>1 000 SKHYG ≈ 171 350 USDT<\/b>/);
+  assert.match(telegramBodies[1].text, /🔵 <b>Тип кендика:<\/b> Разделите награды и Зафиксированные награды/);
+  assert.match(telegramBodies[1].text, /<b><u>Ебашим через: 08:01:48<\/u><\/b>/);
+  assert.match(telegramBodies[1].text, />Открыть CandyDrop<\/a>/);
   assert.deepEqual(sideEffects, [
     'save-state',
     'save-state',
-    'send-telegram',
     'send-telegram',
     'send-telegram',
   ]);
@@ -197,6 +236,7 @@ test('multiple new promotions are separate and a partial failure retries only th
         { id: 'https://www.gate.com/campaigns/one', url: 'https://www.gate.com/campaigns/one', text: 'Promo One' },
         { id: 'https://www.gate.com/campaigns/two', url: 'https://www.gate.com/campaigns/two', text: 'Promo Two' },
       ],
+      candyDrops: [],
       categories: [],
     },
   });
@@ -225,4 +265,96 @@ test('multiple new promotions are separate and a partial failure retries only th
   assert.equal(acceptedMessages.filter((text) => text.includes('Promo One')).length, 1);
   assert.equal(attemptedMessages.filter((text) => text.includes('Promo One')).length, 2);
   assert(redisState.promotions.sentIds.includes('https://www.gate.com/campaigns/one'));
+});
+
+test('multiple new Upcoming CandyDrops are sent separately and not repeated', async (context) => {
+  Object.assign(process.env, {
+    CHECK_SECRET: 'test-check-secret',
+    GATE_API_KEY: 'test-gate-key',
+    GATE_API_SECRET: 'test-gate-secret',
+    UPSTASH_REDIS_REST_URL: 'https://redis.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
+    TELEGRAM_BOT_TOKEN: 'test-telegram-token',
+    TELEGRAM_CHAT_ID: '@ggwp_announcements',
+  });
+  let redisState = {
+    transactions: { sentIds: ['id:1'] },
+    promotions: { sentIds: ['https://www.gate.com/campaigns/known'] },
+    candyDrops: { sentIds: ['candy:KNOWN-1'] },
+  };
+  const messages = [];
+  context.mock.method(global, 'fetch', async (url, options = {}) => {
+    const target = String(url);
+    if (target.startsWith('https://api.gateio.ws/')) {
+      return new Response(JSON.stringify([{ id: 1 }]), { status: 200 });
+    }
+    if (target === 'https://redis.test') {
+      const command = JSON.parse(options.body);
+      if (command[0] === 'SET' && command.includes('NX')) {
+        return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+      }
+      if (command[0] === 'GET') {
+        return new Response(JSON.stringify({ result: JSON.stringify(redisState) }), { status: 200 });
+      }
+      if (command[0] === 'SET') redisState = JSON.parse(command[2]);
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    }
+    if (target.includes('/sendMessage')) {
+      messages.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${target}`);
+  });
+
+  const request = () => ({
+    method: 'POST',
+    headers: { authorization: 'Bearer test-check-secret' },
+    query: {},
+    body: {
+      promotions: [{
+        id: 'https://www.gate.com/campaigns/known',
+        url: 'https://www.gate.com/campaigns/known',
+        text: 'Known promotion',
+      }],
+      candyDrops: [
+        {
+          id: 'candy:KNOWN-1', url: 'https://www.gate.com/en/candy-drop/detail/KNOWN-1',
+          name: 'KNOWN', pool: '100 KNOWN ≈ 10 USDT', candyType: 'Разделите награды', startIn: '10:00:00',
+        },
+        {
+          id: 'candy:NEW-1', url: 'https://www.gate.com/en/candy-drop/detail/NEW-1',
+          name: 'NEW1', pool: '1 000 NEW1 ≈ 100 USDT', candyType: 'Разделите награды', startIn: '09:00:00',
+        },
+        {
+          id: 'candy:NEW-2', url: 'https://www.gate.com/en/candy-drop/detail/NEW-2',
+          name: 'NEW2', pool: '2 000 NEW2 ≈ 200 USDT',
+          candyType: 'Разделите награды и Зафиксированные награды', startIn: '08:00:00',
+        },
+      ],
+      categories: [],
+    },
+  });
+  const invoke = async () => {
+    let status;
+    let body;
+    await handler(request(), {
+      status(value) { status = value; return this; },
+      setHeader() {},
+      end(value) { body = JSON.parse(value); },
+    });
+    return { status, body };
+  };
+
+  const first = await invoke();
+  assert.equal(first.status, 200);
+  assert.equal(first.body.sent.candyDrops, 2);
+  assert.equal(messages.length, 2);
+  assert(messages.some((message) => message.text.includes('NEW1')));
+  assert(messages.some((message) => message.text.includes('NEW2')));
+  assert(messages.every((message) => message.text.startsWith('👇')));
+
+  const second = await invoke();
+  assert.equal(second.status, 200);
+  assert.equal(second.body.sent.candyDrops, 0);
+  assert.equal(messages.length, 2);
 });
