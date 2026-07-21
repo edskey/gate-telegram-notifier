@@ -142,18 +142,63 @@ function formatPromotionTest(promotion) {
   return `🧪 <b>Тест уведомления Rewards Hub</b>\n\n${escapeTelegramHtml(promotion.text)}\n\n🔗 <a href="${escapeTelegramHtml(promotion.url)}">Открыть акцию</a>`;
 }
 
-function formatCandyDrop(candyDrop, isTest = false) {
-  const heading = isTest ? 'Тест CandyDrop Upcoming' : 'Новый CandyDrop Upcoming';
-  return [
+async function coinGeckoUsdPrice(symbol) {
+  try {
+    const searchResponse = await fetch(
+      `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(symbol)}`,
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }
+    );
+    if (!searchResponse.ok) return null;
+    const search = await searchResponse.json();
+    const coin = (search.coins || []).find((item) =>
+      String(item.symbol || '').toUpperCase() === String(symbol).toUpperCase()
+    );
+    if (!coin?.id) return null;
+    const priceResponse = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coin.id)}&vs_currencies=usd`,
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }
+    );
+    if (!priceResponse.ok) return null;
+    const price = Number((await priceResponse.json())?.[coin.id]?.usd);
+    return Number.isFinite(price) && price > 0 ? price : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatNumber(value, maximumFractionDigits = 6) {
+  return Number(value).toLocaleString('ru-RU', { maximumFractionDigits });
+}
+
+async function formatCandyDrop(candyDrop, isTest = false) {
+  const isFixedTest = isTest && candyDrop.id === 'candy:RLUSD-347-fixed-test';
+  const heading = isFixedTest
+    ? 'Тест CandyDrop Fixed Rewards'
+    : (isTest ? 'Тест CandyDrop Upcoming' : 'Новый CandyDrop Upcoming');
+  const rows = [
     `👇 <b>${heading}</b>`,
     '',
     `🔵 <b>Проект:</b> ${escapeTelegramHtml(candyDrop.name)}`,
     `🔵 Бабки не проблема (пул): <b>${escapeTelegramHtml(candyDrop.pool)}</b>`,
     `🔵 <b>Тип кендика:</b> ${escapeTelegramHtml(candyDrop.candyType)}`,
     `🔵 <b><u>Ебашим через: ${escapeTelegramHtml(candyDrop.startIn)}</u></b>`,
-    '',
-    `🔗 <a href="${escapeTelegramHtml(candyDrop.url)}">Открыть CandyDrop</a>`,
-  ].join('\n');
+  ];
+  if (candyDrop.fixedRewards) {
+    const fixed = candyDrop.fixedRewards;
+    const price = await coinGeckoUsdPrice(fixed.symbol);
+    const reward = price === null
+      ? 'не нашел цену/не залистилось'
+      : `${formatNumber(fixed.individualCap)} ${fixed.symbol} ≈ $${formatNumber(fixed.individualCap * price)}`;
+    const places = fixed.hasCandy
+      ? 'Вычисляем мануально, там кендики, я бот, меня починят'
+      : formatNumber(fixed.totalAmount / fixed.individualCap, 2);
+    rows.push(
+      `🔵 <b>Награда:</b> <b>${escapeTelegramHtml(reward)}</b>`,
+      `🔵 <b>Мест в палате:</b> ${escapeTelegramHtml(places)}`
+    );
+  }
+  rows.push('', `🔗 <a href="${escapeTelegramHtml(candyDrop.url)}">Открыть CandyDrop</a>`);
+  return rows.join('\n');
 }
 
 function requestBody(req) {
@@ -182,19 +227,39 @@ function promotionsFromRequest(req) {
   };
 }
 
-function candyDropsFromRequest(req) {
-  const body = requestBody(req);
-  if (!body || !Array.isArray(body.candyDrops)) return null;
-  const candyDrops = body.candyDrops.slice(0, MAX_SENT_IDS).map((item) => ({
+function normalizeCandyDrop(item) {
+  const fixed = item.fixedRewards && typeof item.fixedRewards === 'object' ? {
+    totalAmount: Number(item.fixedRewards.totalAmount),
+    individualCap: Number(item.fixedRewards.individualCap),
+    symbol: String(item.fixedRewards.symbol || '').slice(0, 30).toUpperCase(),
+    hasCandy: item.fixedRewards.hasCandy === true,
+  } : null;
+  const candyDrop = {
     id: String(item.id || item.url || '').slice(0, 1000),
     url: String(item.url || '').slice(0, 2000),
     name: String(item.name || '').slice(0, 200),
     pool: String(item.pool || '').slice(0, 300),
     candyType: String(item.candyType || '').slice(0, 300),
     startIn: String(item.startIn || '').slice(0, 100),
-  })).filter((item) => item.id && item.url && item.name && item.pool && item.candyType && item.startIn);
+    ...(fixed ? { fixedRewards: fixed } : {}),
+  };
+  const validFixed = !/Зафиксированные награды/i.test(candyDrop.candyType) || (
+    fixed && Number.isFinite(fixed.totalAmount) && fixed.totalAmount > 0 &&
+    Number.isFinite(fixed.individualCap) && fixed.individualCap > 0 && fixed.symbol
+  );
+  if (!/Зафиксированные награды/i.test(candyDrop.candyType)) delete candyDrop.fixedRewards;
+  return candyDrop.id && candyDrop.url && candyDrop.name && candyDrop.pool && candyDrop.candyType &&
+    candyDrop.startIn && validFixed ? candyDrop : null;
+}
+
+function candyDropsFromRequest(req) {
+  const body = requestBody(req);
+  if (!body || !Array.isArray(body.candyDrops)) return null;
+  const candyDrops = body.candyDrops.slice(0, MAX_SENT_IDS).map(normalizeCandyDrop).filter(Boolean);
   if (candyDrops.length !== body.candyDrops.slice(0, MAX_SENT_IDS).length) return null;
-  return { candyDrops };
+  const fixedCandyDropTest = body.fixedCandyDropTest ? normalizeCandyDrop(body.fixedCandyDropTest) : null;
+  if (body.fixedCandyDropTest && !fixedCandyDropTest) return null;
+  return { candyDrops, fixedCandyDropTest };
 }
 
 async function sendTelegram(text) {
@@ -269,6 +334,7 @@ async function handler(req, res) {
     const currentIdsBySource = {};
     let testPromotions = [];
     let testCandyDrops = [];
+    let fixedCandyDropTest = null;
 
     if (activityResult.ok) {
       const records = recordsFrom(activityResult.value);
@@ -316,7 +382,7 @@ async function handler(req, res) {
     }
 
     if (candyDropResult.ok) {
-      const { candyDrops } = candyDropResult.value;
+      const { candyDrops, fixedCandyDropTest: scheduledFixedTest } = candyDropResult.value;
       const currentIds = candyDrops.map((candyDrop) => candyDrop.id);
       const known = initializeSource(state, 'candyDrops', currentIds);
       if (known.initialized) result.initialized.push('candyDrops');
@@ -325,20 +391,21 @@ async function handler(req, res) {
       deliveries.push(...fresh.reverse().map((candyDrop) => ({
         source: 'candyDrops',
         id: candyDrop.id,
-        text: formatCandyDrop(candyDrop),
+        candyDrop,
       })));
       state.candyDrops = { sentIds: uniqueIds(known.sentIds || []) };
       currentIdsBySource.candyDrops = currentIds;
       result.candyDrops = candyDrops.length;
       result.sent.candyDrops = fresh.length;
       if (testNotification) testCandyDrops = candyDrops.slice(0, 1);
+      if (testNotification) fixedCandyDropTest = scheduledFixedTest;
     } else {
       result.errors.candyDrops = candyDropResult.error.message;
     }
 
     if (testNotification) {
       result.testNotification = true;
-      result.testNotifications = testPromotions.length + testCandyDrops.length;
+      result.testNotifications = testPromotions.length + testCandyDrops.length + (fixedCandyDropTest ? 1 : 0);
     }
 
     state.initializedAt = state.initializedAt || new Date().toISOString();
@@ -348,7 +415,7 @@ async function handler(req, res) {
     // items on the next scheduler run.
     await saveState(state);
     for (const delivery of deliveries) {
-      await sendTelegram(delivery.text);
+      await sendTelegram(delivery.candyDrop ? await formatCandyDrop(delivery.candyDrop) : delivery.text);
       state[delivery.source].sentIds = uniqueIds([
         delivery.id,
         ...(state[delivery.source].sentIds || []),
@@ -362,7 +429,8 @@ async function handler(req, res) {
     state.checkedAt = new Date().toISOString();
     await saveState(state);
     for (const promotion of testPromotions) await sendTelegram(formatPromotionTest(promotion));
-    for (const candyDrop of testCandyDrops) await sendTelegram(formatCandyDrop(candyDrop, true));
+    for (const candyDrop of testCandyDrops) await sendTelegram(await formatCandyDrop(candyDrop, true));
+    if (fixedCandyDropTest) await sendTelegram(await formatCandyDrop(fixedCandyDropTest, true));
     const hasErrors = Object.keys(result.errors).length > 0;
     result.ok = !hasErrors;
     return respond(res, hasErrors ? 502 : 200, result);

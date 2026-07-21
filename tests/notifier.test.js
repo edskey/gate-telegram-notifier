@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   discoverCategories,
   extractCandyDrops,
+  extractFixedRewardDetails,
   extractPromotions,
 } = require('../scripts/scrape-gate-promotions');
 const handler = require('../api/check');
@@ -72,7 +73,24 @@ test('scraper extracts only Upcoming CandyDrops with pool, type, and timer', () 
   }]);
 });
 
-test('protected POST sends one Rewards Hub and one CandyDrop test message', async (context) => {
+test('scraper isolates the Fixed Rewards pool and Individual Cap', () => {
+  const html = `
+    <div id="prize-pool-shared"><div>Share Rewards</div><h3>Share 70,000 RLUSD</h3>
+      <div>Individual Cap</div><div>50 RLUSD</div></div>
+    <div id="prize-pool-fixed"><div>Fixed Rewards</div>
+      <h3>Deposit to share <b>22,500</b> RLUSD</h3>
+      <section><div>Individual Cap</div><div>5 RLUSD</div></section>
+      <div>Complete a deposit task</div></div>`;
+
+  assert.deepEqual(extractFixedRewardDetails(html), {
+    totalAmount: 22500,
+    individualCap: 5,
+    symbol: 'RLUSD',
+    hasCandy: false,
+  });
+});
+
+test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test messages', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',
     GATE_API_KEY: 'test-gate-key',
@@ -95,6 +113,14 @@ test('protected POST sends one Rewards Hub and one CandyDrop test message', asyn
       if (command[0] === 'SET' && !command.includes('NX')) sideEffects.push('save-state');
       const result = command[0] === 'SET' && command.includes('NX') ? 'OK' : null;
       return new Response(JSON.stringify({ result }), { status: 200 });
+    }
+    if (target.startsWith('https://api.coingecko.com/api/v3/search')) {
+      const query = new URL(target).searchParams.get('query');
+      const coins = query === 'RLUSD' ? [{ id: 'ripple-usd', symbol: 'RLUSD' }] : [];
+      return new Response(JSON.stringify({ coins }), { status: 200 });
+    }
+    if (target.startsWith('https://api.coingecko.com/api/v3/simple/price')) {
+      return new Response(JSON.stringify({ 'ripple-usd': { usd: 1 } }), { status: 200 });
     }
     if (target.startsWith('https://api.telegram.org/')) {
       sideEffects.push('send-telegram');
@@ -136,7 +162,17 @@ test('protected POST sends one Rewards Hub and one CandyDrop test message', asyn
         pool: '1 000 SKHYG ≈ 171 350 USDT',
         candyType: 'Разделите награды и Зафиксированные награды',
         startIn: '08:01:48',
+        fixedRewards: { totalAmount: 1000, individualCap: 10, symbol: 'SKHYG', hasCandy: true },
       }],
+      fixedCandyDropTest: {
+        id: 'candy:RLUSD-347-fixed-test',
+        url: 'https://www.gate.com/en/candy-drop/detail/RLUSD-347',
+        name: 'RLUSD',
+        pool: '262 500 RLUSD',
+        candyType: 'Зафиксированные награды',
+        startIn: 'событие завершено (тест)',
+        fixedRewards: { totalAmount: 22500, individualCap: 5, symbol: 'RLUSD', hasCandy: false },
+      },
       categories: ['https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing'],
     },
   };
@@ -155,8 +191,8 @@ test('protected POST sends one Rewards Hub and one CandyDrop test message', asyn
   assert.equal(responseBody.transactions, 4);
   assert.equal(responseBody.testNotification, true);
   assert.equal(responseBody.candyDrops, 1);
-  assert.equal(responseBody.testNotifications, 2);
-  assert.equal(telegramBodies.length, 2);
+  assert.equal(responseBody.testNotifications, 3);
+  assert.equal(telegramBodies.length, 3);
   assert.equal(telegramBodies[0].chat_id, '@ggwp_announcements');
   assert.equal(telegramBodies[0].parse_mode, 'HTML');
   assert.match(telegramBodies[0].text, /Тест уведомления Rewards Hub/);
@@ -165,10 +201,16 @@ test('protected POST sends one Rewards Hub and one CandyDrop test message', asyn
   assert.match(telegramBodies[1].text, /🔵 Бабки не проблема \(пул\): <b>1 000 SKHYG ≈ 171 350 USDT<\/b>/);
   assert.match(telegramBodies[1].text, /🔵 <b>Тип кендика:<\/b> Разделите награды и Зафиксированные награды/);
   assert.match(telegramBodies[1].text, /<b><u>Ебашим через: 08:01:48<\/u><\/b>/);
+  assert.match(telegramBodies[1].text, /Награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
+  assert.match(telegramBodies[1].text, /Мест в палате:<\/b> Вычисляем мануально, там кендики, я бот, меня починят/);
   assert.match(telegramBodies[1].text, />Открыть CandyDrop<\/a>/);
+  assert.match(telegramBodies[2].text, /^👇 <b>Тест CandyDrop Fixed Rewards<\/b>/);
+  assert.match(telegramBodies[2].text, /Награда:<\/b> <b>5 RLUSD ≈ \$5<\/b>/);
+  assert.match(telegramBodies[2].text, /Мест в палате:<\/b> 4\s?500/);
   assert.deepEqual(sideEffects, [
     'save-state',
     'save-state',
+    'send-telegram',
     'send-telegram',
     'send-telegram',
   ]);
@@ -299,6 +341,9 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
       if (command[0] === 'SET') redisState = JSON.parse(command[2]);
       return new Response(JSON.stringify({ result: null }), { status: 200 });
     }
+    if (target.startsWith('https://api.coingecko.com/api/v3/search')) {
+      return new Response(JSON.stringify({ coins: [] }), { status: 200 });
+    }
     if (target.includes('/sendMessage')) {
       messages.push(JSON.parse(options.body));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -329,6 +374,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
           id: 'candy:NEW-2', url: 'https://www.gate.com/en/candy-drop/detail/NEW-2',
           name: 'NEW2', pool: '2 000 NEW2 ≈ 200 USDT',
           candyType: 'Разделите награды и Зафиксированные награды', startIn: '08:00:00',
+          fixedRewards: { totalAmount: 2000, individualCap: 20, symbol: 'NEW2', hasCandy: false },
         },
       ],
       categories: [],

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       test_notification:
-        description: 'Send one Rewards Hub test and one CandyDrop Upcoming test'
+        description: 'Send Rewards Hub, Upcoming, and Fixed Rewards tests'
         required: false
         default: false
         type: boolean
@@ -27,6 +27,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Collect Gate promotions in browser
+        env:
+          TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
         run: node scripts/scrape-gate-promotions.js > /tmp/gate-promotions.json
 
       - name: Trigger protected Vercel check

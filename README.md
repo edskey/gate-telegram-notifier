@@ -14,7 +14,10 @@ in Upstash Redis and sends each one once to Telegram.
   protected Vercel endpoint; no account cookies or web session are used.
 - The same public browser run checks CandyDrop and keeps only cards marked
   `Start in`/`Upcoming`. It extracts the reward pool, reward type, countdown,
-  and detail link into a separate deduplication source.
+  and detail link into a separate deduplication source. For cards marked Fixed
+  Rewards, it also opens the public detail page and extracts the fixed pool and
+  Individual Cap. CoinGecko's keyless API is queried only when such a new alert
+  is actually sent, to calculate the approximate USD value and available spots.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
@@ -67,8 +70,9 @@ deduplication rule.
 
 To verify Telegram delivery without waiting for a new campaign, manually run
 the GitHub Action and tick `test_notification`. It posts one existing Rewards
-Hub card and, when available, one CandyDrop Upcoming card as separate test
-messages; it does not alter saved IDs. If several genuinely new cards appear
+Hub card, when available one CandyDrop Upcoming card, and the completed RLUSD
+Fixed Rewards example as three separate test messages; it does not alter saved
+IDs. If several genuinely new cards appear
 between checks, each is also sent as a separate message. Delivery state is
 checkpointed after every accepted message, so a partial Telegram failure
 retries only the remaining items.

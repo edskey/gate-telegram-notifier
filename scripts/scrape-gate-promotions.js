@@ -4,6 +4,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
 const CANDY_DROP_URL = `${ORIGIN}/en/candy-drop`;
+const FIXED_TEST_URL = `${ORIGIN}/en/candy-drop/detail/RLUSD-347`;
 const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
   .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
@@ -109,6 +110,54 @@ function normalizeTimer(value) {
     .trim();
 }
 
+function parseGateNumber(value) {
+  const compact = String(value).replace(/[\s\u00a0]/g, '');
+  if (/^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(compact)) return Number(compact.replace(/,/g, ''));
+  if (/^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(compact)) {
+    return Number(compact.replace(/\./g, '').replace(',', '.'));
+  }
+  return Number(compact.replace(',', '.'));
+}
+
+function extractFixedRewardDetails(html) {
+  const unique = new Map();
+  const poolPattern = /<div\b[^>]*\bid=(?:"prize-pool-[^"]+"|'prize-pool-[^']+')[^>]*>/gi;
+  let poolStart;
+  while ((poolStart = poolPattern.exec(html)) !== null) {
+    const poolHtml = balancedDiv(html, poolStart.index);
+    if (!poolHtml) continue;
+    const text = decodeHtml(poolHtml);
+    if (!/^(?:Fixed Rewards|Зафиксированные награды)/i.test(text)) continue;
+
+    const capLabel = /(?:Individual Cap|Индивидуальный лимит)/i.exec(text);
+    if (!capLabel) continue;
+    const heading = text.slice(0, capLabel.index);
+    const capText = text.slice(capLabel.index + capLabel[0].length);
+    const amountPattern = /([0-9][0-9\s.,]*)\s*([A-Z][A-Z0-9._-]*)/gi;
+    const headingAmounts = [...heading.matchAll(amountPattern)];
+    const capMatch = amountPattern.exec(capText);
+    if (headingAmounts.length === 0 || !capMatch) continue;
+
+    const totalMatch = headingAmounts.at(-1);
+    const totalAmount = parseGateNumber(totalMatch[1]);
+    const individualCap = parseGateNumber(capMatch[1]);
+    const totalSymbol = totalMatch[2].toUpperCase();
+    const capSymbol = capMatch[2].toUpperCase();
+    if (!Number.isFinite(totalAmount) || !Number.isFinite(individualCap) || individualCap <= 0 || totalSymbol !== capSymbol) {
+      continue;
+    }
+    const detail = {
+      totalAmount,
+      individualCap,
+      symbol: capSymbol,
+      hasCandy: /\bcand(?:y|ies)\b/i.test(text),
+    };
+    unique.set(JSON.stringify(detail), detail);
+  }
+  if (unique.size === 0) throw new Error('Could not parse the Fixed Rewards pool and Individual Cap');
+  return [...unique.values()][0];
+}
+
 function extractCandyDrops(html) {
   const candyDrops = [];
   const cardPattern = /<div\b[^>]*class=(?:"[^"]*\bcursor-pointer\b[^"]*"|'[^']*\bcursor-pointer\b[^']*')[^>]*>/gi;
@@ -186,10 +235,33 @@ async function main() {
     throw new Error('Headless Chrome could not verify the CandyDrop Upcoming section');
   }
   const candyDrops = extractCandyDrops(candyHtml);
+  const enrichedCandyDrops = await mapWithConcurrency(candyDrops, 2, async (candyDrop) => {
+    if (!/Зафиксированные награды/i.test(candyDrop.candyType)) return candyDrop;
+    const detailHtml = await dumpPage(chrome, candyDrop.url);
+    return { ...candyDrop, fixedRewards: extractFixedRewardDetails(detailHtml) };
+  });
+  let fixedCandyDropTest;
+  if (process.env.TEST_NOTIFICATION === 'true') {
+    const fixedTestHtml = await dumpPage(chrome, FIXED_TEST_URL);
+    fixedCandyDropTest = {
+      id: 'candy:RLUSD-347-fixed-test',
+      url: FIXED_TEST_URL,
+      name: 'RLUSD',
+      pool: '262 500 RLUSD',
+      candyType: 'Зафиксированные награды',
+      startIn: 'событие завершено (тест)',
+      fixedRewards: extractFixedRewardDetails(fixedTestHtml),
+    };
+  }
   process.stderr.write(
-    `Discovered ${categories.length} categories, ${unique.size} promotions, and ${candyDrops.length} Upcoming CandyDrops\n`
+    `Discovered ${categories.length} categories, ${unique.size} promotions, and ${enrichedCandyDrops.length} Upcoming CandyDrops\n`
   );
-  process.stdout.write(JSON.stringify({ promotions: [...unique.values()], candyDrops, categories }));
+  process.stdout.write(JSON.stringify({
+    promotions: [...unique.values()],
+    candyDrops: enrichedCandyDrops,
+    categories,
+    ...(fixedCandyDropTest ? { fixedCandyDropTest } : {}),
+  }));
 }
 
 if (require.main === module) {
@@ -199,4 +271,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { decodeHtml, discoverCategories, extractCandyDrops, extractPromotions };
+module.exports = {
+  decodeHtml,
+  discoverCategories,
+  extractCandyDrops,
+  extractFixedRewardDetails,
+  extractPromotions,
+  parseGateNumber,
+};
