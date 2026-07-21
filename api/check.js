@@ -145,7 +145,7 @@ function promotionContent(promotion) {
     escapeTelegramHtml(text),
     `🔵 <b><u>Ебашим через: ${escapeTelegramHtml(timer)}</u></b>`,
     '',
-    `🔵 <a href="${escapeTelegramHtml(promotion.url)}"><b>Промка</b></a>`,
+    `🔵 <b>Промка:</b> <a href="${escapeTelegramHtml(promotion.url)}">Открыть</a>`,
   ].join('\n');
 }
 
@@ -212,7 +212,7 @@ async function formatCandyDrop(candyDrop, isTest = false) {
       `🔵 <b>Мест в палате:</b> ${escapeTelegramHtml(places)}`
     );
   }
-  rows.push('', `🔵 <a href="${escapeTelegramHtml(candyDrop.url)}"><b>Промка</b></a>`);
+  rows.push('', `🔵 <b>Промка:</b> <a href="${escapeTelegramHtml(candyDrop.url)}">Открыть</a>`);
   return rows.join('\n');
 }
 

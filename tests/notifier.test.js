@@ -198,14 +198,14 @@ test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test message
   assert.match(telegramBodies[0].text, /Тест уведомления Rewards Hub/);
   assert.match(telegramBodies[0].text, /Карнавал прогнозов/);
   assert.match(telegramBodies[0].text, /<b><u>Ебашим через: 02:00:00<\/u><\/b>/);
-  assert.match(telegramBodies[0].text, /🔵 <a href="https:\/\/www\.gate\.com\/campaigns\/5534"><b>Промка<\/b><\/a>/);
+  assert.match(telegramBodies[0].text, /🔵 <b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/campaigns\/5534">Открыть<\/a>/);
   assert.match(telegramBodies[1].text, /^👇 <b>Тест CandyDrop Upcoming<\/b>/);
   assert.match(telegramBodies[1].text, /🔵 Бабки не проблема \(пул\): <b>1 000 SKHYG ≈ 171 350 USDT<\/b>/);
   assert.match(telegramBodies[1].text, /🔵 <b>Тип кендика:<\/b> Разделите награды и Зафиксированные награды/);
   assert.match(telegramBodies[1].text, /<b><u>Ебашим через: 08:01:48<\/u><\/b>/);
   assert.match(telegramBodies[1].text, /Фикс награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
   assert.match(telegramBodies[1].text, /Мест в палате:<\/b> Вычисляем мануально, там кендики, я бот, меня починят/);
-  assert.match(telegramBodies[1].text, /🔵 <a href="https:\/\/www\.gate\.com\/en\/candy-drop\/detail\/SKHYG-350"><b>Промка<\/b><\/a>/);
+  assert.match(telegramBodies[1].text, /🔵 <b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/en\/candy-drop\/detail\/SKHYG-350">Открыть<\/a>/);
   assert.match(telegramBodies[2].text, /^👇 <b>Тест CandyDrop Fixed Rewards<\/b>/);
   assert.match(telegramBodies[2].text, /Фикс награда:<\/b> <b>5 RLUSD ≈ \$5<\/b>/);
   assert.match(telegramBodies[2].text, /Мест в палате:<\/b> 4\s?500/);
