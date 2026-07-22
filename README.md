@@ -26,6 +26,9 @@ Telegram.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
 - GitHub Actions trigger every five minutes for Vercel Hobby.
+- Browser page loads are globally limited to two concurrent Chrome processes.
+  Each failed or empty page is retried up to three times with a longer render
+  budget before the workflow reports a real failure.
 
 The scheduler starts with the known Activity Center categories and discovers
 additional `activity-center-*-ongoing` links from the live page. It scans every

@@ -1,5 +1,6 @@
 const { execFile, execFileSync } = require('child_process');
 const crypto = require('crypto');
+const { setTimeout: delay } = require('timers/promises');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
@@ -22,7 +23,7 @@ function findChrome() {
   throw new Error('Chrome executable was not found on the scheduler');
 }
 
-async function dumpPage(chrome, url) {
+async function dumpPageOnce(chrome, url, virtualTimeBudget) {
   const { stdout } = await execFileAsync(chrome, [
     '--headless=new',
     '--no-sandbox',
@@ -30,13 +31,28 @@ async function dumpPage(chrome, url) {
     '--disable-gpu',
     '--disable-blink-features=AutomationControlled',
     `--user-agent=${USER_AGENT}`,
-    '--virtual-time-budget=8000',
+    `--virtual-time-budget=${virtualTimeBudget}`,
     '--run-all-compositor-stages-before-draw',
     '--dump-dom',
     url,
-  ], { timeout: 30000, maxBuffer: 50 * 1024 * 1024 });
+  ], { timeout: 45000, maxBuffer: 50 * 1024 * 1024 });
   if (!stdout || stdout.length < 500) throw new Error(`Gate returned an empty page for ${url}`);
   return stdout;
+}
+
+async function dumpPage(chrome, url, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await dumpPageOnce(chrome, url, 8000 + ((attempt - 1) * 6000));
+    } catch (error) {
+      lastError = error;
+      const reason = String(error.message || error).replace(/\s+/g, ' ').slice(0, 500);
+      process.stderr.write(`Gate page attempt ${attempt}/${attempts} failed for ${url}: ${reason}\n`);
+      if (attempt < attempts) await delay(1000 * (2 ** (attempt - 1)));
+    }
+  }
+  throw new Error(`Gate page failed after ${attempts} attempts for ${url}: ${lastError?.message || lastError}`);
 }
 
 function decodeHtml(value) {
@@ -277,11 +293,11 @@ async function main() {
   const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
   const categories = discoverCategories(firstHtml);
   const remaining = categories.filter((url) => url !== KNOWN_CATEGORIES[0]);
-  const [remainingPages, candyHtml, futuresPointsHtml] = await Promise.all([
-    mapWithConcurrency(remaining, 3, (url) => dumpPage(chrome, url)),
-    dumpPage(chrome, CANDY_DROP_URL),
-    dumpPage(chrome, FUTURES_POINTS_URL),
-  ]);
+  const pageTargets = [...remaining, CANDY_DROP_URL, FUTURES_POINTS_URL];
+  const loadedPages = await mapWithConcurrency(pageTargets, 2, (url) => dumpPage(chrome, url));
+  const remainingPages = loadedPages.slice(0, remaining.length);
+  const candyHtml = loadedPages[remaining.length];
+  const futuresPointsHtml = loadedPages[remaining.length + 1];
   const htmlPages = [firstHtml, ...remainingPages];
   const unique = new Map();
   for (const html of htmlPages) {
