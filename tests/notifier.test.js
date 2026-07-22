@@ -5,6 +5,7 @@ const {
   discoverCategories,
   extractCandyDrops,
   extractFixedRewardDetails,
+  extractFuturesPointPromotions,
   extractPromotions,
 } = require('../scripts/scrape-gate-promotions');
 const handler = require('../api/check');
@@ -90,6 +91,30 @@ test('scraper isolates the Fixed Rewards pool and Individual Cap', () => {
   });
 });
 
+test('scraper extracts Futures Points upcoming cards and excludes the changing timer from the id', () => {
+  const card = (timer) => `<div class="points-card">
+    <h3>BTC Futures Voucher</h3>
+    <div>Мин. требуемые баллы: <b>40</b></div>
+    <div>Потраченные баллы: <b>20</b></div>
+    <div>Сумма ваучера: <b>100 USDT</b></div>
+    <div>Аирдроп начнется через <span>1Д</span> <span>${timer}</span></div>
+  </div>`;
+  const first = extractFuturesPointPromotions(card('15 : 26 : 37'));
+  const later = extractFuturesPointPromotions(card('15 : 21 : 37'));
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0].id, later[0].id);
+  assert.match(first[0].id, /^futures-points:[a-f0-9]{64}$/);
+  assert.deepEqual({ ...first[0], id: undefined }, {
+    id: undefined,
+    url: 'https://www.gate.com/ru/futures/points/upcoming',
+    minPoints: '40',
+    spentPoints: '20',
+    voucherAmount: '100 USDT',
+    startsIn: '1Д15:26:37',
+  });
+});
+
 test('protected POST creates a baseline without synthetic test messages', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',
@@ -163,6 +188,7 @@ test('protected POST creates a baseline without synthetic test messages', async 
         startIn: '08:01:48',
         fixedRewards: { totalAmount: 1000, individualCap: 10, symbol: 'SKHYG', hasCandy: true },
       }],
+      futuresPoints: [],
       categories: ['https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing'],
     },
   };
@@ -255,6 +281,7 @@ test('multiple new promotions are separate and a partial failure retries only th
         { id: 'https://www.gate.com/campaigns/two', url: 'https://www.gate.com/campaigns/two', text: 'Promo Two' },
       ],
       candyDrops: [],
+      futuresPoints: [],
       categories: [],
     },
   });
@@ -302,6 +329,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
     transactions: { sentIds: ['id:1'] },
     promotions: { sentIds: ['https://www.gate.com/campaigns/known'] },
     candyDrops: { sentIds: ['candy:KNOWN-1'] },
+    futuresPoints: { sentIds: ['futures-points:known'] },
   };
   const messages = [];
   context.mock.method(global, 'fetch', async (url, options = {}) => {
@@ -356,6 +384,18 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
           fixedRewards: { totalAmount: 2000, individualCap: 20, symbol: 'NEW2', hasCandy: false },
         },
       ],
+      futuresPoints: [
+        {
+          id: 'futures-points:known',
+          url: 'https://www.gate.com/ru/futures/points/upcoming',
+          minPoints: '10', spentPoints: '5', voucherAmount: '25 USDT', startsIn: '01:00:00',
+        },
+        {
+          id: 'futures-points:new',
+          url: 'https://www.gate.com/ru/futures/points/upcoming',
+          minPoints: '40', spentPoints: '20', voucherAmount: '100 USDT', startsIn: '1Д15:26:37',
+        },
+      ],
       categories: [],
     },
   });
@@ -373,7 +413,8 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   const first = await invoke();
   assert.equal(first.status, 200);
   assert.equal(first.body.sent.candyDrops, 2);
-  assert.equal(messages.length, 2);
+  assert.equal(first.body.sent.futuresPoints, 1);
+  assert.equal(messages.length, 3);
   assert(messages.some((message) => message.text.includes('NEW1')));
   assert(messages.some((message) => message.text.includes('NEW2')));
   assert(messages.every((message) => message.text.startsWith('👇')));
@@ -383,9 +424,15 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert.match(fixedMessage.text, /Фикс награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
   assert.match(fixedMessage.text, /Мест в палате:<\/b> 100/);
   assert.match(fixedMessage.text, /<b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/ru\/candy-drop\/detail\/NEW-2">Открыть<\/a>/);
+  const futuresMessage = messages.find((message) => message.text.includes('Futures Points'));
+  assert.match(futuresMessage.text, /Мин\. требуемые баллы:<\/b> <b>40<\/b>/);
+  assert.match(futuresMessage.text, /Потраченные баллы:<\/b> <b>20<\/b>/);
+  assert.match(futuresMessage.text, /Сумма ваучера:<\/b> <b>100 USDT<\/b>/);
+  assert.match(futuresMessage.text, /Ебашим через:<\/u><\/b> <b>1Д<\/b> <b>15:26:37<\/b>/);
 
   const second = await invoke();
   assert.equal(second.status, 200);
   assert.equal(second.body.sent.candyDrops, 0);
-  assert.equal(messages.length, 2);
+  assert.equal(second.body.sent.futuresPoints, 0);
+  assert.equal(messages.length, 3);
 });

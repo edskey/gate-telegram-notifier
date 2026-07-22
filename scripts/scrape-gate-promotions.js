@@ -1,9 +1,11 @@
 const { execFile, execFileSync } = require('child_process');
+const crypto = require('crypto');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
 const CANDY_DROP_URL = `${ORIGIN}/ru/candy-drop`;
+const FUTURES_POINTS_URL = `${ORIGIN}/ru/futures/points/upcoming`;
 const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
   .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
@@ -200,6 +202,63 @@ function extractCandyDrops(html) {
   return candyDrops;
 }
 
+function extractFuturesPointPromotions(html) {
+  const promotions = new Map();
+  const labelPattern = /(?:Мин\.\s*требуемые\s*баллы|Minimum Required Points)/gi;
+  let labelMatch;
+  while ((labelMatch = labelPattern.exec(html)) !== null) {
+    const windowStart = Math.max(0, labelMatch.index - 50000);
+    const prefix = html.slice(windowStart, labelMatch.index);
+    const divPattern = /<div\b[^>]*>/gi;
+    const starts = [];
+    let divMatch;
+    while ((divMatch = divPattern.exec(prefix)) !== null) starts.push(windowStart + divMatch.index);
+
+    let cardHtml;
+    for (const start of starts.slice(-30).reverse()) {
+      const candidate = balancedDiv(html, start);
+      if (!candidate) continue;
+      const candidateText = normalizeTimer(decodeHtml(candidate));
+      if (
+        /(?:Мин\.\s*требуемые\s*баллы|Minimum Required Points)/i.test(candidateText) &&
+        /(?:Потраченные\s*баллы|Points Spent)/i.test(candidateText) &&
+        /(?:Сумма\s*ваучера|Voucher Amount)/i.test(candidateText) &&
+        /(?:Аирдроп\s*начнется\s*через|Airdrop starts in)/i.test(candidateText)
+      ) {
+        cardHtml = candidate;
+        break;
+      }
+    }
+    if (!cardHtml) continue;
+
+    const text = normalizeTimer(decodeHtml(cardHtml));
+    const minMatch = text.match(/(?:Мин\.\s*требуемые\s*баллы|Minimum Required Points)\s*:?\s*([0-9][0-9\s.,]*)/i);
+    const spentMatch = text.match(/(?:Потраченные\s*баллы|Points Spent)\s*:?\s*([0-9][0-9\s.,]*)/i);
+    const voucherMatch = text.match(/(?:Сумма\s*ваучера|Voucher Amount)\s*:?\s*([0-9][0-9\s.,]*\s*[A-Z][A-Z0-9._-]*)/i);
+    const timerMatch = text.match(
+      /(?:Аирдроп\s*начнется\s*через|Airdrop starts in)\s*:?\s*((?:[0-9]+\s*[ДD]\s*)?[0-9]{1,2}:[0-9]{2}:[0-9]{2})/i
+    );
+    if (!minMatch || !spentMatch || !voucherMatch || !timerMatch) continue;
+
+    const descriptor = text.slice(0, minMatch.index).slice(-300).trim();
+    const minPoints = String(parseGateNumber(minMatch[1]));
+    const spentPoints = String(parseGateNumber(spentMatch[1]));
+    const voucherAmount = voucherMatch[1].replace(/\s+/g, ' ').trim();
+    const startsIn = timerMatch[1].replace(/\s+/g, '').replace(/D/i, 'Д');
+    const signature = [descriptor, minPoints, spentPoints, voucherAmount].join('|');
+    const id = `futures-points:${crypto.createHash('sha256').update(signature).digest('hex')}`;
+    promotions.set(id, {
+      id,
+      url: FUTURES_POINTS_URL,
+      minPoints,
+      spentPoints,
+      voucherAmount,
+      startsIn,
+    });
+  }
+  return [...promotions.values()];
+}
+
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length);
   let next = 0;
@@ -218,9 +277,10 @@ async function main() {
   const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
   const categories = discoverCategories(firstHtml);
   const remaining = categories.filter((url) => url !== KNOWN_CATEGORIES[0]);
-  const [remainingPages, candyHtml] = await Promise.all([
+  const [remainingPages, candyHtml, futuresPointsHtml] = await Promise.all([
     mapWithConcurrency(remaining, 3, (url) => dumpPage(chrome, url)),
     dumpPage(chrome, CANDY_DROP_URL),
+    dumpPage(chrome, FUTURES_POINTS_URL),
   ]);
   const htmlPages = [firstHtml, ...remainingPages];
   const unique = new Map();
@@ -239,12 +299,17 @@ async function main() {
     const detailHtml = await dumpPage(chrome, candyDrop.url);
     return { ...candyDrop, fixedRewards: extractFixedRewardDetails(detailHtml) };
   });
+  if (!/(?:Скоро|Upcoming)/i.test(decodeHtml(futuresPointsHtml))) {
+    throw new Error('Headless Chrome could not verify the Futures Points upcoming section');
+  }
+  const futuresPoints = extractFuturesPointPromotions(futuresPointsHtml);
   process.stderr.write(
-    `Discovered ${categories.length} categories, ${unique.size} promotions, and ${enrichedCandyDrops.length} Upcoming CandyDrops\n`
+    `Discovered ${categories.length} categories, ${unique.size} promotions, ${enrichedCandyDrops.length} Upcoming CandyDrops, and ${futuresPoints.length} Futures Points promotions\n`
   );
   process.stdout.write(JSON.stringify({
     promotions: [...unique.values()],
     candyDrops: enrichedCandyDrops,
+    futuresPoints,
     categories,
   }));
 }
@@ -261,6 +326,7 @@ module.exports = {
   discoverCategories,
   extractCandyDrops,
   extractFixedRewardDetails,
+  extractFuturesPointPromotions,
   extractPromotions,
   parseGateNumber,
 };

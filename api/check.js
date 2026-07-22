@@ -209,6 +209,23 @@ async function formatCandyDrop(candyDrop) {
   return rows.join('\n');
 }
 
+function formatFuturesPoints(promotion) {
+  const timerMatch = promotion.startsIn.match(/^(?:([0-9]+Д))?([0-9]{1,2}:[0-9]{2}:[0-9]{2})$/i);
+  const timer = timerMatch
+    ? [timerMatch[1], timerMatch[2]].filter(Boolean).map((part) => `<b>${escapeTelegramHtml(part)}</b>`).join(' ')
+    : `<b>${escapeTelegramHtml(promotion.startsIn)}</b>`;
+  return [
+    '👇 <b>Новая промоакция Futures Points</b>',
+    '',
+    `🔵 <b>Мин. требуемые баллы:</b> <b>${escapeTelegramHtml(promotion.minPoints)}</b>`,
+    `🔵 <b>Потраченные баллы:</b> <b>${escapeTelegramHtml(promotion.spentPoints)}</b>`,
+    `🔵 <b>Сумма ваучера:</b> <b>${escapeTelegramHtml(promotion.voucherAmount)}</b>`,
+    `🔵 <b><u>Ебашим через:</u></b> ${timer}`,
+    '',
+    `🔵 <b>Промка:</b> <a href="${escapeTelegramHtml(promotion.url)}">Открыть</a>`,
+  ].join('\n');
+}
+
 function requestBody(req) {
   let body = req.body;
   if (Buffer.isBuffer(body)) body = body.toString('utf8');
@@ -268,6 +285,21 @@ function candyDropsFromRequest(req) {
   return { candyDrops };
 }
 
+function futuresPointsFromRequest(req) {
+  const body = requestBody(req);
+  if (!body || !Array.isArray(body.futuresPoints)) return null;
+  const futuresPoints = body.futuresPoints.slice(0, MAX_SENT_IDS).map((item) => ({
+    id: String(item.id || '').slice(0, 1000),
+    url: String(item.url || '').slice(0, 2000),
+    minPoints: String(item.minPoints || '').slice(0, 100),
+    spentPoints: String(item.spentPoints || '').slice(0, 100),
+    voucherAmount: String(item.voucherAmount || '').slice(0, 200),
+    startsIn: String(item.startsIn || '').slice(0, 100),
+  })).filter((item) => item.id && item.url && item.minPoints && item.spentPoints && item.voucherAmount && item.startsIn);
+  if (futuresPoints.length !== body.futuresPoints.slice(0, MAX_SENT_IDS).length) return null;
+  return { futuresPoints };
+}
+
 async function sendTelegram(text) {
   const token = env('TELEGRAM_BOT_TOKEN').trim();
   const chatId = env('TELEGRAM_CHAT_ID').trim();
@@ -312,6 +344,7 @@ async function handler(req, res) {
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
   const scheduledPromotions = promotionsFromRequest(req);
   const scheduledCandyDrops = candyDropsFromRequest(req);
+  const scheduledFuturesPoints = futuresPointsFromRequest(req);
 
   let acquiredLock = false;
   try {
@@ -319,7 +352,7 @@ async function handler(req, res) {
     if (!acquiredLock) return respond(res, 202, { ok: true, skipped: 'check_already_running' });
 
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
-    const [activityResult, promotionResult, candyDropResult, savedState] = await Promise.all([
+    const [activityResult, promotionResult, candyDropResult, futuresPointsResult, savedState] = await Promise.all([
       gateGet('/rebate/partner/transaction_history', { page: 1, limit }),
       scheduledPromotions
         ? Promise.resolve(scheduledPromotions)
@@ -327,6 +360,9 @@ async function handler(req, res) {
       scheduledCandyDrops
         ? Promise.resolve(scheduledCandyDrops)
         : Promise.reject(new Error('CandyDrop payload from scheduler browser is missing or invalid')),
+      scheduledFuturesPoints
+        ? Promise.resolve(scheduledFuturesPoints)
+        : Promise.reject(new Error('Futures Points payload from scheduler browser is missing or invalid')),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
       (value) => ({ ok: true, value }),
@@ -337,7 +373,7 @@ async function handler(req, res) {
     const result = {
       ok: true,
       initialized: [],
-      sent: { transactions: 0, promotions: 0, candyDrops: 0 },
+      sent: { transactions: 0, promotions: 0, candyDrops: 0, futuresPoints: 0 },
       errors: {},
     };
     const deliveries = [];
@@ -403,6 +439,26 @@ async function handler(req, res) {
       result.sent.candyDrops = fresh.length;
     } else {
       result.errors.candyDrops = candyDropResult.error.message;
+    }
+
+    if (futuresPointsResult.ok) {
+      const { futuresPoints } = futuresPointsResult.value;
+      const currentIds = futuresPoints.map((promotion) => promotion.id);
+      const known = initializeSource(state, 'futuresPoints', currentIds);
+      if (known.initialized) result.initialized.push('futuresPoints');
+      const seen = new Set(known.sentIds || []);
+      const fresh = known.initialized ? [] : futuresPoints.filter((promotion) => !seen.has(promotion.id));
+      deliveries.push(...fresh.reverse().map((promotion) => ({
+        source: 'futuresPoints',
+        id: promotion.id,
+        text: formatFuturesPoints(promotion),
+      })));
+      state.futuresPoints = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.futuresPoints = currentIds;
+      result.futuresPoints = futuresPoints.length;
+      result.sent.futuresPoints = fresh.length;
+    } else {
+      result.errors.futuresPoints = futuresPointsResult.error.message;
     }
 
     state.initializedAt = state.initializedAt || new Date().toISOString();

@@ -1,8 +1,9 @@
 # Gate partner Telegram notifier
 
 Serverless bot for **new Gate promotion cards**, **CandyDrop Upcoming cards**,
-and **new Partner Activity transactions**. It persists processed links/events
-in Upstash Redis and sends each one once to Telegram.
+**Futures Points upcoming airdrops**, and **new Partner Activity transactions**.
+It persists processed links/events in Upstash Redis and sends each one once to
+Telegram.
 
 ## What is implemented
 
@@ -18,6 +19,9 @@ in Upstash Redis and sends each one once to Telegram.
   Rewards, it also opens the public detail page and extracts the fixed pool and
   Individual Cap. CoinGecko's keyless API is queried only when such a new alert
   is actually sent, to calculate the approximate USD value and available spots.
+- The public Futures Points `/ru/futures/points/upcoming` section is checked for
+  new cards. Minimum required points, points spent, voucher amount, and the
+  countdown are stored as a separate deduplication source.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
