@@ -3,8 +3,7 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
-const CANDY_DROP_URL = `${ORIGIN}/en/candy-drop`;
-const FIXED_TEST_URL = `${ORIGIN}/en/candy-drop/detail/RLUSD-347`;
+const CANDY_DROP_URL = `${ORIGIN}/ru/candy-drop`;
 const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
   .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
@@ -191,7 +190,7 @@ function extractCandyDrops(html) {
     }
     candyDrops.push({
       id: `candy:${slug}`,
-      url: `${ORIGIN}/en/candy-drop/detail/${slug}`,
+      url: `${ORIGIN}/ru/candy-drop/detail/${slug}`,
       name: name.slice(0, 200),
       pool: `${poolMatch[1]} ≈ ${poolMatch[2]}`.replace(/\s+/g, ' ').trim(),
       candyType: candyTypes.join(' и '),
@@ -240,19 +239,6 @@ async function main() {
     const detailHtml = await dumpPage(chrome, candyDrop.url);
     return { ...candyDrop, fixedRewards: extractFixedRewardDetails(detailHtml) };
   });
-  let fixedCandyDropTest;
-  if (process.env.TEST_NOTIFICATION === 'true') {
-    const fixedTestHtml = await dumpPage(chrome, FIXED_TEST_URL);
-    fixedCandyDropTest = {
-      id: 'candy:RLUSD-347-fixed-test',
-      url: FIXED_TEST_URL,
-      name: 'RLUSD',
-      pool: '262 500 RLUSD',
-      candyType: 'Зафиксированные награды',
-      startIn: 'событие завершено (тест)',
-      fixedRewards: extractFixedRewardDetails(fixedTestHtml),
-    };
-  }
   process.stderr.write(
     `Discovered ${categories.length} categories, ${unique.size} promotions, and ${enrichedCandyDrops.length} Upcoming CandyDrops\n`
   );
@@ -260,7 +246,6 @@ async function main() {
     promotions: [...unique.values()],
     candyDrops: enrichedCandyDrops,
     categories,
-    ...(fixedCandyDropTest ? { fixedCandyDropTest } : {}),
   }));
 }
 

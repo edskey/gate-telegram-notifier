@@ -65,7 +65,7 @@ test('scraper extracts only Upcoming CandyDrops with pool, type, and timer', () 
 
   assert.deepEqual(extractCandyDrops(html), [{
     id: 'candy:SKHYG-350',
-    url: 'https://www.gate.com/en/candy-drop/detail/SKHYG-350',
+    url: 'https://www.gate.com/ru/candy-drop/detail/SKHYG-350',
     name: 'SKHYG',
     pool: '1 000 SKHYG ≈ 171 350 USDT',
     candyType: 'Разделите награды и Зафиксированные награды',
@@ -90,7 +90,7 @@ test('scraper isolates the Fixed Rewards pool and Individual Cap', () => {
   });
 });
 
-test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test messages', async (context) => {
+test('protected POST creates a baseline without synthetic test messages', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',
     GATE_API_KEY: 'test-gate-key',
@@ -134,7 +134,6 @@ test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test message
     method: 'POST',
     headers: {
       authorization: 'Bearer test-check-secret',
-      'x-gate-bot-test': 'true',
     },
     query: {},
     body: {
@@ -157,22 +156,13 @@ test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test message
       ],
       candyDrops: [{
         id: 'candy:SKHYG-350',
-        url: 'https://www.gate.com/en/candy-drop/detail/SKHYG-350',
+        url: 'https://www.gate.com/ru/candy-drop/detail/SKHYG-350',
         name: 'SKHYG',
         pool: '1 000 SKHYG ≈ 171 350 USDT',
         candyType: 'Разделите награды и Зафиксированные награды',
         startIn: '08:01:48',
         fixedRewards: { totalAmount: 1000, individualCap: 10, symbol: 'SKHYG', hasCandy: true },
       }],
-      fixedCandyDropTest: {
-        id: 'candy:RLUSD-347-fixed-test',
-        url: 'https://www.gate.com/en/candy-drop/detail/RLUSD-347',
-        name: 'RLUSD',
-        pool: '262 500 RLUSD',
-        candyType: 'Зафиксированные награды',
-        startIn: 'событие завершено (тест)',
-        fixedRewards: { totalAmount: 22500, individualCap: 5, symbol: 'RLUSD', hasCandy: false },
-      },
       categories: ['https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing'],
     },
   };
@@ -189,33 +179,12 @@ test('protected POST sends Rewards Hub, Upcoming, and Fixed Rewards test message
   assert.equal(status, 200);
   assert.equal(responseBody.promotions, 3);
   assert.equal(responseBody.transactions, 4);
-  assert.equal(responseBody.testNotification, true);
   assert.equal(responseBody.candyDrops, 1);
-  assert.equal(responseBody.testNotifications, 3);
-  assert.equal(telegramBodies.length, 3);
-  assert.equal(telegramBodies[0].chat_id, '@ggwp_announcements');
-  assert.equal(telegramBodies[0].parse_mode, 'HTML');
-  assert.match(telegramBodies[0].text, /Тест уведомления Rewards Hub/);
-  assert.match(telegramBodies[0].text, /Карнавал прогнозов/);
-  assert.match(telegramBodies[0].text, /<b><u>Ебашим через: 02:00:00<\/u><\/b>/);
-  assert.match(telegramBodies[0].text, /🔵 <b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/campaigns\/5534">Открыть<\/a>/);
-  assert.match(telegramBodies[1].text, /^👇 <b>Тест CandyDrop Upcoming<\/b>/);
-  assert.match(telegramBodies[1].text, /🔵 Бабки не проблема \(пул\): <b>1 000 SKHYG ≈ 171 350 USDT<\/b>/);
-  assert.match(telegramBodies[1].text, /🔵 <b>Тип кендика:<\/b> Разделите награды и Зафиксированные награды/);
-  assert.match(telegramBodies[1].text, /<b><u>Ебашим через: 08:01:48<\/u><\/b>/);
-  assert.match(telegramBodies[1].text, /Фикс награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
-  assert.match(telegramBodies[1].text, /Мест в палате:<\/b> Вычисляем мануально, там кендики, я бот, меня починят/);
-  assert.match(telegramBodies[1].text, /🔵 <b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/en\/candy-drop\/detail\/SKHYG-350">Открыть<\/a>/);
-  assert.match(telegramBodies[2].text, /^👇 <b>Тест CandyDrop Fixed Rewards<\/b>/);
-  assert.match(telegramBodies[2].text, /Фикс награда:<\/b> <b>5 RLUSD ≈ \$5<\/b>/);
-  assert.match(telegramBodies[2].text, /Мест в палате:<\/b> 4\s?500/);
-  assert(telegramBodies.every((body) => body.disable_notification === true));
+  assert.equal(telegramBodies.length, 0);
+  assert.equal('testNotification' in responseBody, false);
   assert.deepEqual(sideEffects, [
     'save-state',
     'save-state',
-    'send-telegram',
-    'send-telegram',
-    'send-telegram',
   ]);
 });
 
@@ -278,7 +247,11 @@ test('multiple new promotions are separate and a partial failure retries only th
     body: {
       promotions: [
         { id: 'https://www.gate.com/campaigns/old', url: 'https://www.gate.com/campaigns/old', text: 'Old' },
-        { id: 'https://www.gate.com/campaigns/one', url: 'https://www.gate.com/campaigns/one', text: 'Promo One' },
+        {
+          id: 'https://www.gate.com/campaigns/one',
+          url: 'https://www.gate.com/campaigns/one',
+          text: 'Promo One Countdown: 01:00:00',
+        },
         { id: 'https://www.gate.com/campaigns/two', url: 'https://www.gate.com/campaigns/two', text: 'Promo Two' },
       ],
       candyDrops: [],
@@ -309,6 +282,9 @@ test('multiple new promotions are separate and a partial failure retries only th
   assert.equal(acceptedMessages.filter((text) => text.includes('Promo Two')).length, 1);
   assert.equal(acceptedMessages.filter((text) => text.includes('Promo One')).length, 1);
   assert.equal(attemptedMessages.filter((text) => text.includes('Promo One')).length, 2);
+  const promoOneMessage = acceptedMessages.find((text) => text.includes('Promo One'));
+  assert.match(promoOneMessage, /<b><u>Таймер: 01:00:00<\/u><\/b>/);
+  assert.match(promoOneMessage, /<b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/campaigns\/one">Открыть<\/a>/);
   assert(redisState.promotions.sentIds.includes('https://www.gate.com/campaigns/one'));
 });
 
@@ -366,15 +342,15 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
       }],
       candyDrops: [
         {
-          id: 'candy:KNOWN-1', url: 'https://www.gate.com/en/candy-drop/detail/KNOWN-1',
+          id: 'candy:KNOWN-1', url: 'https://www.gate.com/ru/candy-drop/detail/KNOWN-1',
           name: 'KNOWN', pool: '100 KNOWN ≈ 10 USDT', candyType: 'Разделите награды', startIn: '10:00:00',
         },
         {
-          id: 'candy:NEW-1', url: 'https://www.gate.com/en/candy-drop/detail/NEW-1',
+          id: 'candy:NEW-1', url: 'https://www.gate.com/ru/candy-drop/detail/NEW-1',
           name: 'NEW1', pool: '1 000 NEW1 ≈ 100 USDT', candyType: 'Разделите награды', startIn: '09:00:00',
         },
         {
-          id: 'candy:NEW-2', url: 'https://www.gate.com/en/candy-drop/detail/NEW-2',
+          id: 'candy:NEW-2', url: 'https://www.gate.com/ru/candy-drop/detail/NEW-2',
           name: 'NEW2', pool: '2 000 NEW2 ≈ 200 USDT',
           candyType: 'Разделите награды и Зафиксированные награды', startIn: '08:00:00',
           fixedRewards: { totalAmount: 2000, individualCap: 20, symbol: 'NEW2', hasCandy: false },
@@ -402,6 +378,11 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert(messages.some((message) => message.text.includes('NEW2')));
   assert(messages.every((message) => message.text.startsWith('👇')));
   assert(messages.every((message) => message.disable_notification === false));
+  const fixedMessage = messages.find((message) => message.text.includes('NEW2'));
+  assert.match(fixedMessage.text, /<b><u>Ебашим через: 08:00:00<\/u><\/b>/);
+  assert.match(fixedMessage.text, /Фикс награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
+  assert.match(fixedMessage.text, /Мест в палате:<\/b> 100/);
+  assert.match(fixedMessage.text, /<b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/ru\/candy-drop\/detail\/NEW-2">Открыть<\/a>/);
 
   const second = await invoke();
   assert.equal(second.status, 200);
