@@ -324,6 +324,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
     UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
     TELEGRAM_BOT_TOKEN: 'test-telegram-token',
     TELEGRAM_CHAT_ID: '@ggwp_announcements',
+    COINGECKO_API_KEY: 'test-coingecko-key',
   });
   let redisState = {
     transactions: { sentIds: ['id:1'] },
@@ -332,6 +333,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
     futuresPoints: { sentIds: ['futures-points:known'] },
   };
   const messages = [];
+  const coinGeckoRequests = [];
   context.mock.method(global, 'fetch', async (url, options = {}) => {
     const target = String(url);
     if (target.startsWith('https://api.gateio.ws/')) {
@@ -349,7 +351,12 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
       return new Response(JSON.stringify({ result: null }), { status: 200 });
     }
     if (target.startsWith('https://api.coingecko.com/api/v3/search')) {
-      return new Response(JSON.stringify({ coins: [] }), { status: 200 });
+      coinGeckoRequests.push({ target, headers: options.headers });
+      return new Response(JSON.stringify({ coins: [{ id: 'new-token-2', symbol: 'NEW2' }] }), { status: 200 });
+    }
+    if (target.startsWith('https://api.coingecko.com/api/v3/simple/price')) {
+      coinGeckoRequests.push({ target, headers: options.headers });
+      return new Response(JSON.stringify({ 'new-token-2': { usd: 2.5 } }), { status: 200 });
     }
     if (target.includes('/sendMessage')) {
       messages.push(JSON.parse(options.body));
@@ -375,7 +382,9 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
         },
         {
           id: 'candy:NEW-1', url: 'https://www.gate.com/ru/candy-drop/detail/NEW-1',
-          name: 'NEW1', pool: '1 000 NEW1 ≈ 100 USDT', candyType: 'Разделите награды', startIn: '09:00:00',
+          name: 'NEW1', pool: '1 000 NEW1 ≈ 100 USDT',
+          candyType: 'Разделите награды и Зафиксированные награды', startIn: '09:00:00',
+          fixedRewards: { totalAmount: 1000, individualCap: 10, symbol: 'USDC', hasCandy: false },
         },
         {
           id: 'candy:NEW-2', url: 'https://www.gate.com/ru/candy-drop/detail/NEW-2',
@@ -419,9 +428,13 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert(messages.some((message) => message.text.includes('NEW2')));
   assert(messages.every((message) => message.text.startsWith('👇')));
   assert(messages.every((message) => message.disable_notification === false));
+  const stablecoinMessage = messages.find((message) => message.text.includes('NEW1'));
+  assert.match(stablecoinMessage.text, /Фикс награда:<\/b> <b>10 USDC ≈ \$10<\/b>/);
+  assert.equal(coinGeckoRequests.length, 2);
+  assert(coinGeckoRequests.every(({ headers }) => headers['x-cg-demo-api-key'] === 'test-coingecko-key'));
   const fixedMessage = messages.find((message) => message.text.includes('NEW2'));
   assert.match(fixedMessage.text, /<b><u>Ебашим через: 08:00:00<\/u><\/b>/);
-  assert.match(fixedMessage.text, /Фикс награда:<\/b> <b>не нашел цену\/не залистилось<\/b>/);
+  assert.match(fixedMessage.text, /Фикс награда:<\/b> <b>20 NEW2 ≈ \$50<\/b>/);
   assert.match(fixedMessage.text, /Мест в палате:<\/b> 100/);
   assert.match(fixedMessage.text, /<b>Промка:<\/b> <a href="https:\/\/www\.gate\.com\/ru\/candy-drop\/detail\/NEW-2">Открыть<\/a>/);
   const futuresMessage = messages.find((message) => message.text.includes('Futures Points'));

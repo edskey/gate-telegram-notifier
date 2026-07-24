@@ -154,20 +154,30 @@ function formatPromotion(promotion) {
 }
 
 async function coinGeckoUsdPrice(symbol) {
+  const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+  if (normalizedSymbol === 'USDT' || normalizedSymbol === 'USDC') return 1;
+
+  const apiKey = env('COINGECKO_API_KEY', false)?.trim();
+  if (!normalizedSymbol || !apiKey) return null;
+
+  const headers = {
+    Accept: 'application/json',
+    'x-cg-demo-api-key': apiKey,
+  };
   try {
     const searchResponse = await fetch(
-      `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(symbol)}`,
-      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }
+      `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(normalizedSymbol)}`,
+      { headers, signal: AbortSignal.timeout(5000) }
     );
     if (!searchResponse.ok) return null;
     const search = await searchResponse.json();
     const coin = (search.coins || []).find((item) =>
-      String(item.symbol || '').toUpperCase() === String(symbol).toUpperCase()
+      String(item.symbol || '').toUpperCase() === normalizedSymbol
     );
     if (!coin?.id) return null;
     const priceResponse = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coin.id)}&vs_currencies=usd`,
-      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }
+      { headers, signal: AbortSignal.timeout(5000) }
     );
     if (!priceResponse.ok) return null;
     const price = Number((await priceResponse.json())?.[coin.id]?.usd);

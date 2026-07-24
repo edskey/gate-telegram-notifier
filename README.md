@@ -17,8 +17,9 @@ Telegram.
   `Start in`/`Upcoming`. It extracts the reward pool, reward type, countdown,
   and detail link into a separate deduplication source. For cards marked Fixed
   Rewards, it also opens the public detail page and extracts the fixed pool and
-  Individual Cap. CoinGecko's keyless API is queried only when such a new alert
-  is actually sent, to calculate the approximate USD value and available spots.
+  Individual Cap. CoinGecko's Demo API is queried only when a new Fixed Rewards
+  alert for a non-USDT/USDC token is actually sent, to calculate its approximate
+  USD value. USDT and USDC are treated as approximately $1 without an API call.
 - The public Futures Points `/ru/futures/points/upcoming` section is checked for
   new cards. Minimum required points, points spent, voucher amount, and the
   countdown are stored as a separate deduplication source.
@@ -50,7 +51,8 @@ Gate API remains the separate source for Partner Activity transactions.
    URL and REST token.
 4. Import this repository into Vercel. Add every variable from `.env.example`
    in **Settings → Environment Variables**. Generate `CHECK_SECRET` with, for
-   example, `openssl rand -hex 32`.
+   example, `openssl rand -hex 32`. Create a free CoinGecko Demo API key and
+   store it as `COINGECKO_API_KEY`; never put the key in GitHub or the repository.
 5. Deploy. The endpoint will be:
    `https://YOUR_PROJECT.vercel.app/api/check`.
 6. In GitHub repository **Settings → Secrets and variables → Actions**, add:
