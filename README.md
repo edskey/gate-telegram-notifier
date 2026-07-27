@@ -26,7 +26,9 @@ Telegram.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
-- GitHub Actions trigger every five minutes for Vercel Hobby.
+- Independent GitHub Actions triggers every five minutes for Vercel Hobby.
+  CandyDrop runs in its own lightweight workflow and does not wait for or fail
+  with the slower Rewards Hub/Futures scan.
 - Browser page loads are globally limited to two concurrent Chrome processes.
   Each failed or empty page is retried up to three times with a longer render
   budget before the workflow reports a real failure.
@@ -77,8 +79,10 @@ The bot treats a newly appearing promotion-card link (for example,
 Telegram. Channel formatting can be changed independently without affecting the
 deduplication rule.
 
-The manual GitHub Actions trigger runs the same production check as the
-five-minute schedule; it does not send synthetic test messages. If several
-genuinely new cards appear between checks, each is sent as a separate message.
-Delivery state is checkpointed after every accepted message, so a partial
-Telegram failure retries only the remaining items.
+The two manual GitHub Actions triggers run the same production checks as their
+five-minute schedules; neither sends synthetic test messages. The protected
+Vercel endpoint accepts source-specific payloads without clearing or changing
+the state of omitted sources. If several genuinely new cards appear between
+checks, each is sent as a separate message. Delivery state is checkpointed
+after every accepted message, so a partial Telegram failure retries only the
+remaining items.

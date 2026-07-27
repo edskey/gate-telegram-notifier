@@ -1,4 +1,4 @@
-name: Check Gate promotions and partner activity
+name: Check Gate CandyDrop
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gate-telegram-notifier-core
+  group: gate-telegram-notifier-candy
   cancel-in-progress: false
 
 jobs:
@@ -20,8 +20,8 @@ jobs:
       - name: Checkout bot source
         uses: actions/checkout@v4
 
-      - name: Collect Gate promotions in browser
-        run: node scripts/scrape-gate-promotions.js --source=core > /tmp/gate-promotions.json
+      - name: Collect CandyDrop Upcoming in browser
+        run: node scripts/scrape-gate-promotions.js --source=candy > /tmp/gate-candy-drops.json
 
       - name: Trigger protected Vercel check
         env:
@@ -37,5 +37,5 @@ jobs:
             -X POST \
             -H "Authorization: Bearer $CHECK_SECRET" \
             -H "Content-Type: application/json" \
-            --data-binary @/tmp/gate-promotions.json \
+            --data-binary @/tmp/gate-candy-drops.json \
             "$CHECK_URL"

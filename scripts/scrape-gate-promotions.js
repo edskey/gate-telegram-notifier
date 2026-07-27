@@ -288,16 +288,27 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-async function main() {
-  const chrome = findChrome();
+async function collectCandyDrops(chrome) {
+  const candyHtml = await dumpPage(chrome, CANDY_DROP_URL);
+  if (!/(?:Upcoming|Предстоящие)/i.test(decodeHtml(candyHtml))) {
+    throw new Error('Headless Chrome could not verify the CandyDrop Upcoming section');
+  }
+  const candyDrops = extractCandyDrops(candyHtml);
+  return mapWithConcurrency(candyDrops, 2, async (candyDrop) => {
+    if (!/Зафиксированные награды/i.test(candyDrop.candyType)) return candyDrop;
+    const detailHtml = await dumpPage(chrome, candyDrop.url);
+    return { ...candyDrop, fixedRewards: extractFixedRewardDetails(detailHtml) };
+  });
+}
+
+async function collectCorePromotions(chrome) {
   const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
   const categories = discoverCategories(firstHtml);
   const remaining = categories.filter((url) => url !== KNOWN_CATEGORIES[0]);
-  const pageTargets = [...remaining, CANDY_DROP_URL, FUTURES_POINTS_URL];
+  const pageTargets = [...remaining, FUTURES_POINTS_URL];
   const loadedPages = await mapWithConcurrency(pageTargets, 2, (url) => dumpPage(chrome, url));
   const remainingPages = loadedPages.slice(0, remaining.length);
-  const candyHtml = loadedPages[remaining.length];
-  const futuresPointsHtml = loadedPages[remaining.length + 1];
+  const futuresPointsHtml = loadedPages[remaining.length];
   const htmlPages = [firstHtml, ...remainingPages];
   const unique = new Map();
   for (const html of htmlPages) {
@@ -306,28 +317,48 @@ async function main() {
     }
   }
   if (unique.size === 0) throw new Error('Headless Chrome found no Gate promotion cards');
-  if (!/(?:Upcoming|Предстоящие)/i.test(decodeHtml(candyHtml))) {
-    throw new Error('Headless Chrome could not verify the CandyDrop Upcoming section');
-  }
-  const candyDrops = extractCandyDrops(candyHtml);
-  const enrichedCandyDrops = await mapWithConcurrency(candyDrops, 2, async (candyDrop) => {
-    if (!/Зафиксированные награды/i.test(candyDrop.candyType)) return candyDrop;
-    const detailHtml = await dumpPage(chrome, candyDrop.url);
-    return { ...candyDrop, fixedRewards: extractFixedRewardDetails(detailHtml) };
-  });
   if (!/(?:Скоро|Upcoming)/i.test(decodeHtml(futuresPointsHtml))) {
     throw new Error('Headless Chrome could not verify the Futures Points upcoming section');
   }
   const futuresPoints = extractFuturesPointPromotions(futuresPointsHtml);
-  process.stderr.write(
-    `Discovered ${categories.length} categories, ${unique.size} promotions, ${enrichedCandyDrops.length} Upcoming CandyDrops, and ${futuresPoints.length} Futures Points promotions\n`
-  );
-  process.stdout.write(JSON.stringify({
+  return {
     promotions: [...unique.values()],
-    candyDrops: enrichedCandyDrops,
     futuresPoints,
     categories,
-  }));
+  };
+}
+
+function requestedSource() {
+  const argument = process.argv.find((value) => value.startsWith('--source='));
+  const source = argument?.slice('--source='.length) || process.env.GATE_SCRAPE_SOURCE || 'all';
+  if (!['all', 'candy', 'core'].includes(source)) {
+    throw new Error(`Unknown scrape source: ${source}`);
+  }
+  return source;
+}
+
+async function main() {
+  const chrome = findChrome();
+  const source = requestedSource();
+  const payload = {};
+  if (source === 'all') {
+    const [core, candyDrops] = await Promise.all([
+      collectCorePromotions(chrome),
+      collectCandyDrops(chrome),
+    ]);
+    Object.assign(payload, core, { candyDrops });
+  } else if (source === 'candy') {
+    payload.candyDrops = await collectCandyDrops(chrome);
+  } else {
+    Object.assign(payload, await collectCorePromotions(chrome));
+  }
+
+  process.stderr.write(
+    `Collected ${source}: ${payload.categories?.length || 0} categories, ` +
+    `${payload.promotions?.length || 0} promotions, ${payload.candyDrops?.length || 0} Upcoming CandyDrops, ` +
+    `and ${payload.futuresPoints?.length || 0} Futures Points promotions\n`
+  );
+  process.stdout.write(JSON.stringify(payload));
 }
 
 if (require.main === module) {

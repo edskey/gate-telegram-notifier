@@ -352,30 +352,48 @@ async function handler(req, res) {
     return respond(res, 405, { error: 'method_not_allowed' });
   }
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
-  const scheduledPromotions = promotionsFromRequest(req);
-  const scheduledCandyDrops = candyDropsFromRequest(req);
-  const scheduledFuturesPoints = futuresPointsFromRequest(req);
+  const body = requestBody(req);
+  const hasPayload = (name) => body && Object.prototype.hasOwnProperty.call(body, name);
+  const hasPromotions = hasPayload('promotions');
+  const hasCandyDrops = hasPayload('candyDrops');
+  const hasFuturesPoints = hasPayload('futuresPoints');
+  const scheduledPromotions = hasPromotions ? promotionsFromRequest(req) : null;
+  const scheduledCandyDrops = hasCandyDrops ? candyDropsFromRequest(req) : null;
+  const scheduledFuturesPoints = hasFuturesPoints ? futuresPointsFromRequest(req) : null;
+  const checkTransactions = req.method === 'GET' || hasPromotions;
+  const skipped = Symbol('skipped');
 
   let acquiredLock = false;
   try {
     acquiredLock = (await redis(['SET', LOCK_KEY, '1', 'NX', 'EX', 30])) === 'OK';
-    if (!acquiredLock) return respond(res, 202, { ok: true, skipped: 'check_already_running' });
+    if (!acquiredLock) {
+      res.setHeader('Retry-After', '2');
+      return respond(res, 503, { ok: false, retryable: 'check_already_running' });
+    }
 
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
     const [activityResult, promotionResult, candyDropResult, futuresPointsResult, savedState] = await Promise.all([
-      gateGet('/rebate/partner/transaction_history', { page: 1, limit }),
-      scheduledPromotions
+      checkTransactions
+        ? gateGet('/rebate/partner/transaction_history', { page: 1, limit })
+        : Promise.resolve(skipped),
+      !hasPromotions
+        ? Promise.resolve(skipped)
+        : scheduledPromotions
         ? Promise.resolve(scheduledPromotions)
         : Promise.reject(new Error('Promotion payload from scheduler browser is missing or empty')),
-      scheduledCandyDrops
+      !hasCandyDrops
+        ? Promise.resolve(skipped)
+        : scheduledCandyDrops
         ? Promise.resolve(scheduledCandyDrops)
         : Promise.reject(new Error('CandyDrop payload from scheduler browser is missing or invalid')),
-      scheduledFuturesPoints
+      !hasFuturesPoints
+        ? Promise.resolve(skipped)
+        : scheduledFuturesPoints
         ? Promise.resolve(scheduledFuturesPoints)
         : Promise.reject(new Error('Futures Points payload from scheduler browser is missing or invalid')),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
-      (value) => ({ ok: true, value }),
+      (value) => value === skipped ? { skipped: true } : { ok: true, value },
       (error) => ({ ok: false, error })
     )));
 
@@ -389,7 +407,9 @@ async function handler(req, res) {
     const deliveries = [];
     const currentIdsBySource = {};
 
-    if (activityResult.ok) {
+    if (activityResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (activityResult.ok) {
       const records = recordsFrom(activityResult.value);
       const currentIds = records.map(eventId);
       const known = initializeSource(state, 'transactions', currentIds);
@@ -409,7 +429,9 @@ async function handler(req, res) {
       result.errors.transactions = activityResult.error.message;
     }
 
-    if (promotionResult.ok) {
+    if (promotionResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (promotionResult.ok) {
       const { promotions, categories, sourceCounts } = promotionResult.value;
       const currentIds = promotions.map((promotion) => promotion.id);
       const known = initializeSource(state, 'promotions', currentIds);
@@ -431,7 +453,9 @@ async function handler(req, res) {
       result.errors.promotions = promotionResult.error.message;
     }
 
-    if (candyDropResult.ok) {
+    if (candyDropResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (candyDropResult.ok) {
       const { candyDrops } = candyDropResult.value;
       const currentIds = candyDrops.map((candyDrop) => candyDrop.id);
       const known = initializeSource(state, 'candyDrops', currentIds);
@@ -451,7 +475,9 @@ async function handler(req, res) {
       result.errors.candyDrops = candyDropResult.error.message;
     }
 
-    if (futuresPointsResult.ok) {
+    if (futuresPointsResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (futuresPointsResult.ok) {
       const { futuresPoints } = futuresPointsResult.value;
       const currentIds = futuresPoints.map((promotion) => promotion.id);
       const known = initializeSource(state, 'futuresPoints', currentIds);

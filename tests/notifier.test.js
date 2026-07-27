@@ -214,6 +214,120 @@ test('protected POST creates a baseline without synthetic test messages', async 
   ]);
 });
 
+test('CandyDrop-only payload sends promptly without touching unrelated sources', async (context) => {
+  Object.assign(process.env, {
+    CHECK_SECRET: 'test-check-secret',
+    GATE_API_KEY: 'test-gate-key',
+    GATE_API_SECRET: 'test-gate-secret',
+    UPSTASH_REDIS_REST_URL: 'https://redis.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
+    TELEGRAM_BOT_TOKEN: 'test-telegram-token',
+    TELEGRAM_CHAT_ID: '@ggwp_announcements',
+  });
+
+  let redisState = {
+    transactions: { sentIds: ['id:1'] },
+    promotions: { sentIds: ['https://www.gate.com/campaigns/known'] },
+    candyDrops: { sentIds: [] },
+    futuresPoints: { sentIds: ['futures-points:known'] },
+  };
+  const unrelatedState = {
+    transactions: JSON.parse(JSON.stringify(redisState.transactions)),
+    promotions: JSON.parse(JSON.stringify(redisState.promotions)),
+    futuresPoints: JSON.parse(JSON.stringify(redisState.futuresPoints)),
+  };
+  const messages = [];
+  let gateCalls = 0;
+
+  context.mock.method(global, 'fetch', async (url, options = {}) => {
+    const target = String(url);
+    if (target.startsWith('https://api.gateio.ws/')) {
+      gateCalls += 1;
+      throw new Error('CandyDrop-only payload must not call the Gate Partner API');
+    }
+    if (target === 'https://redis.test') {
+      const command = JSON.parse(options.body);
+      if (command[0] === 'SET' && command.includes('NX')) {
+        return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+      }
+      if (command[0] === 'GET') {
+        return new Response(JSON.stringify({ result: JSON.stringify(redisState) }), { status: 200 });
+      }
+      if (command[0] === 'SET') redisState = JSON.parse(command[2]);
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    }
+    if (target.includes('/sendMessage')) {
+      messages.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${target}`);
+  });
+
+  let status;
+  let responseBody;
+  await handler({
+    method: 'POST',
+    headers: { authorization: 'Bearer test-check-secret' },
+    query: {},
+    body: {
+      candyDrops: [{
+        id: 'candy:FAST-1',
+        url: 'https://www.gate.com/ru/candy-drop/detail/FAST-1',
+        name: 'FAST',
+        pool: '1 000 FAST ≈ 100 USDT',
+        candyType: 'Разделите награды',
+        startIn: '00:30:00',
+      }],
+    },
+  }, {
+    status(value) { status = value; return this; },
+    setHeader() {},
+    end(value) { responseBody = JSON.parse(value); },
+  });
+
+  assert.equal(status, 200);
+  assert.equal(gateCalls, 0);
+  assert.deepEqual(responseBody.errors, {});
+  assert.equal(responseBody.sent.candyDrops, 1);
+  assert.equal(messages.length, 1);
+  assert(messages[0].text.includes('FAST'));
+  assert.deepEqual(redisState.transactions, unrelatedState.transactions);
+  assert.deepEqual(redisState.promotions, unrelatedState.promotions);
+  assert.deepEqual(redisState.futuresPoints, unrelatedState.futuresPoints);
+  assert(redisState.candyDrops.sentIds.includes('candy:FAST-1'));
+});
+
+test('overlapping scheduler request returns a retryable status', async (context) => {
+  Object.assign(process.env, {
+    CHECK_SECRET: 'test-check-secret',
+    UPSTASH_REDIS_REST_URL: 'https://redis.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
+  });
+  context.mock.method(global, 'fetch', async (url, options = {}) => {
+    assert.equal(String(url), 'https://redis.test');
+    assert.deepEqual(JSON.parse(options.body), ['SET', 'gate-partner-bot:check-lock:v1', '1', 'NX', 'EX', 30]);
+    return new Response(JSON.stringify({ result: null }), { status: 200 });
+  });
+
+  let status;
+  let responseBody;
+  const headers = {};
+  await handler({
+    method: 'POST',
+    headers: { authorization: 'Bearer test-check-secret' },
+    query: {},
+    body: { candyDrops: [] },
+  }, {
+    status(value) { status = value; return this; },
+    setHeader(name, value) { headers[name] = value; return this; },
+    end(value) { responseBody = JSON.parse(value); },
+  });
+
+  assert.equal(status, 503);
+  assert.equal(headers['Retry-After'], '2');
+  assert.deepEqual(responseBody, { ok: false, retryable: 'check_already_running' });
+});
+
 test('multiple new promotions are separate and a partial failure retries only the remainder', async (context) => {
   context.mock.method(console, 'error', () => {});
   Object.assign(process.env, {
