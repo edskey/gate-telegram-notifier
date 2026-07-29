@@ -7,6 +7,8 @@ const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
 const CANDY_DROP_URL = `${ORIGIN}/ru/candy-drop`;
 const FUTURES_POINTS_URL = `${ORIGIN}/ru/futures/points/upcoming`;
+const ANNOUNCEMENTS_ACTIVITY_URL = `${ORIGIN}/ru/announcements/activity`;
+const ANNOUNCEMENT_ARTICLE_LIMIT = 15;
 const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
   .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
@@ -92,6 +94,18 @@ function isPromotionLink(url, text) {
   return /(?:Обратный отсчет|Countdown|Ends? in)/i.test(text) && !/activity-center-/i.test(url.pathname);
 }
 
+function promotionUrls(url) {
+  if (url.origin !== ORIGIN) {
+    const stableUrl = `${url.origin}${url.pathname}`;
+    return { id: stableUrl, url: stableUrl };
+  }
+  const pathWithoutLocale = url.pathname.replace(/^\/(?:ru|en)(?=\/)/i, '');
+  return {
+    id: `${ORIGIN}${pathWithoutLocale}`,
+    url: `${ORIGIN}/ru${pathWithoutLocale}`,
+  };
+}
+
 function extractPromotions(html) {
   const promotions = [];
   const anchorPattern = /<a\b[^>]*href=(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/a>/gi;
@@ -101,10 +115,38 @@ function extractPromotions(html) {
     try { url = new URL(match[1] || match[2], ORIGIN); } catch { continue; }
     const text = decodeHtml(match[3]).slice(0, 900);
     if (!text || !isPromotionLink(url, text)) continue;
-    const stableUrl = `${url.origin}${url.pathname}`;
-    promotions.push({ id: stableUrl, url: stableUrl, text });
+    const normalized = promotionUrls(url);
+    promotions.push({ ...normalized, text });
   }
   return promotions;
+}
+
+function extractAnnouncementArticles(html, limit = ANNOUNCEMENT_ARTICLE_LIMIT) {
+  const articles = new Map();
+  const anchorPattern = /<a\b[^>]*href=(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = anchorPattern.exec(html)) !== null && articles.size < limit) {
+    let url;
+    try { url = new URL(match[1] || match[2], ORIGIN); } catch { continue; }
+    const slug = url.pathname.match(/\/announcements\/article\/(\d+)$/i)?.[1];
+    const title = decodeHtml(match[3]).slice(0, 500);
+    if (!slug || !title || articles.has(slug)) continue;
+    articles.set(slug, {
+      id: `announcement:${slug}`,
+      url: `${ORIGIN}/ru/announcements/article/${slug}`,
+      title,
+    });
+  }
+  return [...articles.values()];
+}
+
+function extractAnnouncementCampaigns(html, article = {}) {
+  const headingMatch = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+  const heading = headingMatch ? decodeHtml(headingMatch[1]).slice(0, 900) : '';
+  const text = heading || String(article.title || '').slice(0, 900);
+  return extractPromotions(html)
+    .filter((promotion) => /\/campaigns\/\d+$/i.test(new URL(promotion.id).pathname))
+    .map((promotion) => ({ ...promotion, text: text || promotion.text }));
 }
 
 function balancedDiv(html, startIndex) {
@@ -301,6 +343,37 @@ async function collectCandyDrops(chrome) {
   });
 }
 
+async function collectAnnouncementCampaigns(chrome) {
+  const indexHtml = await dumpPage(chrome, ANNOUNCEMENTS_ACTIVITY_URL);
+  if (!/(?:Latest Events|Последние события)/i.test(decodeHtml(indexHtml))) {
+    throw new Error('Headless Chrome could not verify the Gate Latest Events announcements section');
+  }
+  const articles = extractAnnouncementArticles(indexHtml);
+  if (articles.length === 0) throw new Error('Headless Chrome found no Gate Latest Events articles');
+
+  const articleResults = await mapWithConcurrency(articles, 2, async (article) => {
+    try {
+      const html = await dumpPage(chrome, article.url);
+      return { article, promotions: extractAnnouncementCampaigns(html, article) };
+    } catch (error) {
+      const reason = String(error.message || error).replace(/\s+/g, ' ').slice(0, 500);
+      process.stderr.write(`Gate announcement article failed for ${article.url}: ${reason}\n`);
+      return { article, promotions: [], error: reason };
+    }
+  });
+  const unique = new Map();
+  for (const result of articleResults) {
+    for (const promotion of result.promotions) {
+      if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
+    }
+  }
+  return {
+    promotions: [...unique.values()],
+    articleCount: articles.length,
+    failedArticleCount: articleResults.filter((result) => result.error).length,
+  };
+}
+
 async function collectCorePromotions(chrome) {
   const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
   const categories = discoverCategories(firstHtml);
@@ -316,6 +389,12 @@ async function collectCorePromotions(chrome) {
       if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
     }
   }
+  let announcements = { promotions: [], articleCount: 0, failedArticleCount: 0 };
+  try {
+    announcements = await collectAnnouncementCampaigns(chrome);
+  } catch (error) {
+    process.stderr.write(`Gate announcements source failed: ${error.message || error}\n`);
+  }
   if (unique.size === 0) throw new Error('Headless Chrome found no Gate promotion cards');
   if (!/(?:Скоро|Upcoming)/i.test(decodeHtml(futuresPointsHtml))) {
     throw new Error('Headless Chrome could not verify the Futures Points upcoming section');
@@ -323,15 +402,21 @@ async function collectCorePromotions(chrome) {
   const futuresPoints = extractFuturesPointPromotions(futuresPointsHtml);
   return {
     promotions: [...unique.values()],
+    announcementCampaigns: announcements.promotions,
     futuresPoints,
     categories,
+    announcements: {
+      articles: announcements.articleCount,
+      failedArticles: announcements.failedArticleCount,
+      campaigns: announcements.promotions.length,
+    },
   };
 }
 
 function requestedSource() {
   const argument = process.argv.find((value) => value.startsWith('--source='));
   const source = argument?.slice('--source='.length) || process.env.GATE_SCRAPE_SOURCE || 'all';
-  if (!['all', 'candy', 'core'].includes(source)) {
+  if (!['all', 'announcements', 'candy', 'core'].includes(source)) {
     throw new Error(`Unknown scrape source: ${source}`);
   }
   return source;
@@ -349,14 +434,24 @@ async function main() {
     Object.assign(payload, core, { candyDrops });
   } else if (source === 'candy') {
     payload.candyDrops = await collectCandyDrops(chrome);
+  } else if (source === 'announcements') {
+    const announcements = await collectAnnouncementCampaigns(chrome);
+    payload.announcementCampaigns = announcements.promotions;
+    payload.announcements = {
+      articles: announcements.articleCount,
+      failedArticles: announcements.failedArticleCount,
+      campaigns: announcements.promotions.length,
+    };
   } else {
     Object.assign(payload, await collectCorePromotions(chrome));
   }
 
   process.stderr.write(
     `Collected ${source}: ${payload.categories?.length || 0} categories, ` +
-    `${payload.promotions?.length || 0} promotions, ${payload.candyDrops?.length || 0} Upcoming CandyDrops, ` +
-    `and ${payload.futuresPoints?.length || 0} Futures Points promotions\n`
+    `${payload.promotions?.length || 0} promotions, ${payload.announcementCampaigns?.length || 0} announcement campaigns, ` +
+    `${payload.candyDrops?.length || 0} Upcoming CandyDrops, ` +
+    `${payload.futuresPoints?.length || 0} Futures Points promotions, and ` +
+    `${payload.announcements?.campaigns || 0} campaigns from ${payload.announcements?.articles || 0} recent announcements\n`
   );
   process.stdout.write(JSON.stringify(payload));
 }
@@ -371,6 +466,8 @@ if (require.main === module) {
 module.exports = {
   decodeHtml,
   discoverCategories,
+  extractAnnouncementArticles,
+  extractAnnouncementCampaigns,
   extractCandyDrops,
   extractFixedRewardDetails,
   extractFuturesPointPromotions,

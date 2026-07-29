@@ -255,11 +255,29 @@ function promotionsFromRequest(req) {
   })).filter((item) => item.id && item.url && item.text);
   if (promotions.length === 0) return null;
   const categories = Array.isArray(body.categories) ? body.categories.slice(0, 100) : [];
+  const announcements = body.announcements && typeof body.announcements === 'object' ? {
+    articles: Number(body.announcements.articles) || 0,
+    failedArticles: Number(body.announcements.failedArticles) || 0,
+    campaigns: Number(body.announcements.campaigns) || 0,
+  } : undefined;
   return {
     promotions,
     categories,
+    announcements,
     sourceCounts: { scheduler_browser: promotions.length },
   };
+}
+
+function announcementCampaignsFromRequest(req) {
+  const body = requestBody(req);
+  if (!body || !Array.isArray(body.announcementCampaigns)) return null;
+  const announcementCampaigns = body.announcementCampaigns.slice(0, MAX_SENT_IDS).map((item) => ({
+    id: String(item.id || item.url || '').slice(0, 1000),
+    url: String(item.url || '').slice(0, 2000),
+    text: String(item.text || '').slice(0, 900),
+  })).filter((item) => item.id && item.url && item.text);
+  if (announcementCampaigns.length !== body.announcementCampaigns.slice(0, MAX_SENT_IDS).length) return null;
+  return { announcementCampaigns };
 }
 
 function normalizeCandyDrop(item) {
@@ -355,9 +373,11 @@ async function handler(req, res) {
   const body = requestBody(req);
   const hasPayload = (name) => body && Object.prototype.hasOwnProperty.call(body, name);
   const hasPromotions = hasPayload('promotions');
+  const hasAnnouncementCampaigns = hasPayload('announcementCampaigns');
   const hasCandyDrops = hasPayload('candyDrops');
   const hasFuturesPoints = hasPayload('futuresPoints');
   const scheduledPromotions = hasPromotions ? promotionsFromRequest(req) : null;
+  const scheduledAnnouncementCampaigns = hasAnnouncementCampaigns ? announcementCampaignsFromRequest(req) : null;
   const scheduledCandyDrops = hasCandyDrops ? candyDropsFromRequest(req) : null;
   const scheduledFuturesPoints = hasFuturesPoints ? futuresPointsFromRequest(req) : null;
   const checkTransactions = req.method === 'GET' || hasPromotions;
@@ -372,7 +392,14 @@ async function handler(req, res) {
     }
 
     const limit = Math.min(Math.max(Number(process.env.TRANSACTION_PAGE_SIZE || 100), 1), 100);
-    const [activityResult, promotionResult, candyDropResult, futuresPointsResult, savedState] = await Promise.all([
+    const [
+      activityResult,
+      promotionResult,
+      announcementCampaignResult,
+      candyDropResult,
+      futuresPointsResult,
+      savedState,
+    ] = await Promise.all([
       checkTransactions
         ? gateGet('/rebate/partner/transaction_history', { page: 1, limit })
         : Promise.resolve(skipped),
@@ -381,6 +408,11 @@ async function handler(req, res) {
         : scheduledPromotions
         ? Promise.resolve(scheduledPromotions)
         : Promise.reject(new Error('Promotion payload from scheduler browser is missing or empty')),
+      !hasAnnouncementCampaigns
+        ? Promise.resolve(skipped)
+        : scheduledAnnouncementCampaigns
+        ? Promise.resolve(scheduledAnnouncementCampaigns)
+        : Promise.reject(new Error('Announcement campaign payload from scheduler browser is invalid')),
       !hasCandyDrops
         ? Promise.resolve(skipped)
         : scheduledCandyDrops
@@ -401,7 +433,7 @@ async function handler(req, res) {
     const result = {
       ok: true,
       initialized: [],
-      sent: { transactions: 0, promotions: 0, candyDrops: 0, futuresPoints: 0 },
+      sent: { transactions: 0, promotions: 0, announcementCampaigns: 0, candyDrops: 0, futuresPoints: 0 },
       errors: {},
     };
     const deliveries = [];
@@ -432,11 +464,14 @@ async function handler(req, res) {
     if (promotionResult.skipped) {
       // A source-specific scheduler request must not touch unrelated state.
     } else if (promotionResult.ok) {
-      const { promotions, categories, sourceCounts } = promotionResult.value;
+      const { promotions, categories, announcements, sourceCounts } = promotionResult.value;
       const currentIds = promotions.map((promotion) => promotion.id);
       const known = initializeSource(state, 'promotions', currentIds);
       if (known.initialized) result.initialized.push('promotions');
-      const seen = new Set(known.sentIds || []);
+      const seen = new Set([
+        ...(known.sentIds || []),
+        ...(state.announcementCampaigns?.sentIds || []),
+      ]);
       const fresh = known.initialized ? [] : promotions.filter((promotion) => !seen.has(promotion.id));
       deliveries.push(...fresh.reverse().map((promotion) => ({
         source: 'promotions',
@@ -447,10 +482,39 @@ async function handler(req, res) {
       currentIdsBySource.promotions = currentIds;
       result.promotions = promotions.length;
       result.categories = categories.length;
+      if (announcements) result.announcements = announcements;
       result.promotionSources = sourceCounts;
       result.sent.promotions = fresh.length;
     } else {
       result.errors.promotions = promotionResult.error.message;
+    }
+
+    if (announcementCampaignResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (announcementCampaignResult.ok) {
+      const { announcementCampaigns } = announcementCampaignResult.value;
+      const currentIds = announcementCampaigns.map((promotion) => promotion.id);
+      const known = initializeSource(state, 'announcementCampaigns', currentIds);
+      if (known.initialized) result.initialized.push('announcementCampaigns');
+      const seen = new Set([
+        ...(known.sentIds || []),
+        ...(state.promotions?.sentIds || []),
+        ...(currentIdsBySource.promotions || []),
+      ]);
+      const fresh = known.initialized
+        ? []
+        : announcementCampaigns.filter((promotion) => !seen.has(promotion.id));
+      deliveries.push(...fresh.reverse().map((promotion) => ({
+        source: 'announcementCampaigns',
+        id: promotion.id,
+        text: formatPromotion(promotion),
+      })));
+      state.announcementCampaigns = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.announcementCampaigns = currentIds;
+      result.announcementCampaigns = announcementCampaigns.length;
+      result.sent.announcementCampaigns = fresh.length;
+    } else {
+      result.errors.announcementCampaigns = announcementCampaignResult.error.message;
     }
 
     if (candyDropResult.skipped) {

@@ -13,6 +13,16 @@ Telegram.
 - GitHub Actions uses its preinstalled headless Chrome to read public Gate
   Activity Center cards. It sends the extracted IDs, text, and links to the
   protected Vercel endpoint; no account cookies or web session are used.
+- The same core run reads the public Gate **Latest Events** announcements page,
+  opens its 15 newest articles, and extracts arbitrary `/campaigns/<id>` links
+  from the article bodies. This catches campaigns such as `/campaigns/5672`
+  that are announced by Gate but never appear in the monitored Rewards Hub
+  sectors. Campaign links sent to Telegram use the Russian `/ru/` route while
+  deduplication keeps a locale-independent campaign ID.
+  This source has its own first-run baseline, so deploying the feature does not
+  publish a backlog of existing announcement campaigns. IDs are cross-checked
+  against Activity Center promotions to prevent the same campaign being sent
+  twice when Gate exposes it in both places.
 - The same public browser run checks CandyDrop and keeps only cards marked
   `Start in`/`Upcoming`. It extracts the reward pool, reward type, countdown,
   and detail link into a separate deduplication source. For cards marked Fixed
@@ -35,8 +45,10 @@ Telegram.
 
 The scheduler starts with the known Activity Center categories and discovers
 additional `activity-center-*-ongoing` links from the live page. It scans every
-category and deduplicates matching promotion links across sectors. The signed
-Gate API remains the separate source for Partner Activity transactions.
+category plus recent Latest Events articles and deduplicates matching promotion
+links across all sources. A failed announcement article is logged and retried on
+the next run without deleting previously stored campaign IDs. The signed Gate
+API remains the separate source for Partner Activity transactions.
 
 ## Setup
 

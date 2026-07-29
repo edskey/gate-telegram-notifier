@@ -3,6 +3,8 @@ const test = require('node:test');
 
 const {
   discoverCategories,
+  extractAnnouncementArticles,
+  extractAnnouncementCampaigns,
   extractCandyDrops,
   extractFixedRewardDetails,
   extractFuturesPointPromotions,
@@ -44,8 +46,40 @@ test('scraper discovers new sectors and extracts stable promotion links', () => 
   assert(categories.includes('https://www.gate.com/ru/rewards_hub/activity-center-9999-ongoing'));
   assert.deepEqual(promotions, [{
     id: 'https://www.gate.com/campaigns/5534',
-    url: 'https://www.gate.com/campaigns/5534',
+    url: 'https://www.gate.com/ru/campaigns/5534',
     text: 'Карнавал прогнозов: делите 500 000 USDT Обратный отсчет: 02:00:00',
+  }]);
+});
+
+test('scraper follows Latest Events articles and extracts campaign links with Russian URLs', () => {
+  const indexHtml = `
+    <a href="/ru/announcements/article/100882">
+      <span>Безумная среда Wealth Home Run</span><time>12 часов назад</time>
+    </a>
+    <a href="/en/announcements/article/100882">Duplicate locale</a>
+    <a href="/ru/announcements/article/100881">Другой анонс</a>`;
+  assert.deepEqual(extractAnnouncementArticles(indexHtml), [
+    {
+      id: 'announcement:100882',
+      url: 'https://www.gate.com/ru/announcements/article/100882',
+      title: 'Безумная среда Wealth Home Run 12 часов назад',
+    },
+    {
+      id: 'announcement:100881',
+      url: 'https://www.gate.com/ru/announcements/article/100881',
+      title: 'Другой анонс',
+    },
+  ]);
+
+  const articleHtml = `
+    <article>
+      <h1>Безумная среда Wealth Home Run: зарегистрируйтесь для участия</h1>
+      <a href="https://www.gate.com/campaigns/5672?ref=announcement">Присоединиться сейчас</a>
+    </article>`;
+  assert.deepEqual(extractAnnouncementCampaigns(articleHtml), [{
+    id: 'https://www.gate.com/campaigns/5672',
+    url: 'https://www.gate.com/ru/campaigns/5672',
+    text: 'Безумная среда Wealth Home Run: зарегистрируйтесь для участия',
   }]);
 });
 
@@ -179,6 +213,11 @@ test('protected POST creates a baseline without synthetic test messages', async 
           text: 'Третья тестовая акция',
         },
       ],
+      announcementCampaigns: [{
+        id: 'https://www.gate.com/campaigns/5672',
+        url: 'https://www.gate.com/ru/campaigns/5672',
+        text: 'Безумная среда Wealth Home Run',
+      }],
       candyDrops: [{
         id: 'candy:SKHYG-350',
         url: 'https://www.gate.com/ru/candy-drop/detail/SKHYG-350',
@@ -204,8 +243,10 @@ test('protected POST creates a baseline without synthetic test messages', async 
 
   assert.equal(status, 200);
   assert.equal(responseBody.promotions, 3);
+  assert.equal(responseBody.announcementCampaigns, 1);
   assert.equal(responseBody.transactions, 4);
   assert.equal(responseBody.candyDrops, 1);
+  assert(responseBody.initialized.includes('announcementCampaigns'));
   assert.equal(telegramBodies.length, 0);
   assert.equal('testNotification' in responseBody, false);
   assert.deepEqual(sideEffects, [
@@ -295,6 +336,78 @@ test('CandyDrop-only payload sends promptly without touching unrelated sources',
   assert.deepEqual(redisState.promotions, unrelatedState.promotions);
   assert.deepEqual(redisState.futuresPoints, unrelatedState.futuresPoints);
   assert(redisState.candyDrops.sentIds.includes('candy:FAST-1'));
+});
+
+test('announcement campaigns baseline independently and avoid cross-source duplicates', async (context) => {
+  Object.assign(process.env, {
+    CHECK_SECRET: 'test-check-secret',
+    UPSTASH_REDIS_REST_URL: 'https://redis.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
+    TELEGRAM_BOT_TOKEN: 'test-telegram-token',
+    TELEGRAM_CHAT_ID: '@ggwp_announcements',
+  });
+  let redisState = {
+    promotions: { sentIds: ['https://www.gate.com/campaigns/shared'] },
+    announcementCampaigns: { sentIds: ['https://www.gate.com/campaigns/old'] },
+  };
+  const messages = [];
+  context.mock.method(global, 'fetch', async (url, options = {}) => {
+    const target = String(url);
+    if (target === 'https://redis.test') {
+      const command = JSON.parse(options.body);
+      if (command[0] === 'SET' && command.includes('NX')) {
+        return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+      }
+      if (command[0] === 'GET') {
+        return new Response(JSON.stringify({ result: JSON.stringify(redisState) }), { status: 200 });
+      }
+      if (command[0] === 'SET') redisState = JSON.parse(command[2]);
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    }
+    if (target.includes('/sendMessage')) {
+      messages.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${target}`);
+  });
+  const promotions = [
+    ['old', 'Old'],
+    ['shared', 'Already sent by Activity Center'],
+    ['new-one', 'New One'],
+    ['new-two', 'New Two'],
+  ].map(([slug, text]) => ({
+    id: `https://www.gate.com/campaigns/${slug}`,
+    url: `https://www.gate.com/ru/campaigns/${slug}`,
+    text,
+  }));
+  const invoke = async () => {
+    let status;
+    let body;
+    await handler({
+      method: 'POST',
+      headers: { authorization: 'Bearer test-check-secret' },
+      query: {},
+      body: { announcementCampaigns: promotions },
+    }, {
+      status(value) { status = value; return this; },
+      setHeader() {},
+      end(value) { body = JSON.parse(value); },
+    });
+    return { status, body };
+  };
+
+  const first = await invoke();
+  assert.equal(first.status, 200);
+  assert.equal(first.body.sent.announcementCampaigns, 2);
+  assert.equal(messages.length, 2);
+  assert(messages.some((message) => message.text.includes('New One')));
+  assert(messages.some((message) => message.text.includes('New Two')));
+  assert(!messages.some((message) => message.text.includes('Already sent by Activity Center')));
+
+  const second = await invoke();
+  assert.equal(second.status, 200);
+  assert.equal(second.body.sent.announcementCampaigns, 0);
+  assert.equal(messages.length, 2);
 });
 
 test('overlapping scheduler request returns a retryable status', async (context) => {
