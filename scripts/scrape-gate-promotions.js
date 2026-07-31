@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
 const CANDY_DROP_URL = `${ORIGIN}/ru/candy-drop`;
 const FUTURES_POINTS_URL = `${ORIGIN}/ru/futures/points/upcoming`;
+const FUTURES_LOTTERY_URL = `${ORIGIN}/ru/futures/points/ended?section=lottery`;
 const ANNOUNCEMENTS_ACTIVITY_URL = `${ORIGIN}/ru/announcements/activity`;
 const ANNOUNCEMENT_ARTICLE_LIMIT = 15;
 const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
@@ -317,6 +318,82 @@ function extractFuturesPointPromotions(html) {
   return [...promotions.values()];
 }
 
+function extractFuturesLotteryPromotions(html) {
+  const promotions = new Map();
+  const labelPattern = /(?:Сумма\s*награды|Reward Amount)/gi;
+  let labelMatch;
+  while ((labelMatch = labelPattern.exec(html)) !== null) {
+    const windowStart = Math.max(0, labelMatch.index - 50000);
+    const prefix = html.slice(windowStart, labelMatch.index);
+    const divPattern = /<div\b[^>]*>/gi;
+    const starts = [];
+    let divMatch;
+    while ((divMatch = divPattern.exec(prefix)) !== null) starts.push(windowStart + divMatch.index);
+
+    let cardHtml;
+    for (const start of starts.slice(-30).reverse()) {
+      const candidate = balancedDiv(html, start);
+      if (!candidate) continue;
+      const candidateText = decodeHtml(candidate);
+      if (
+        /(?:Сумма\s*награды|Reward Amount)/i.test(candidateText) &&
+        /(?:Мин\.\s*баллов\s*требуется|Minimum Points Required)/i.test(candidateText) &&
+        /(?:Выигрышные\s*слоты|Winning Slots)/i.test(candidateText) &&
+        /(?:Время\s*розыгрыша|Draw Time)/i.test(candidateText) &&
+        /(?:Объявлено|Анонсировано|Announced)/i.test(candidateText)
+      ) {
+        cardHtml = candidate;
+        break;
+      }
+    }
+    if (!cardHtml) continue;
+
+    const text = decodeHtml(cardHtml);
+    const rewardMatch = text.match(
+      /(?:Сумма\s*награды|Reward Amount)\s*:?[\s]*([0-9][0-9\s.,]*\s*[A-Z][A-Z0-9._-]*)/i
+    );
+    const minMatch = text.match(
+      /(?:Мин\.\s*баллов\s*требуется|Minimum Points Required)\s*:?\s*([0-9][0-9\s.,]*)/i
+    );
+    const slotsMatch = text.match(
+      /(?:Выигрышные\s*слоты|Winning Slots)\s*:?\s*([0-9][0-9\s.,]*)/i
+    );
+    const drawTimeMatch = text.match(
+      /(?:Время\s*розыгрыша|Draw Time)\s*:?\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/i
+    );
+    if (!rewardMatch || !minMatch || !slotsMatch || !drawTimeMatch) continue;
+
+    const rewardAmount = rewardMatch[1].replace(/\s+/g, ' ').trim();
+    const minPoints = String(parseGateNumber(minMatch[1]));
+    const winningSlotsNumber = parseGateNumber(slotsMatch[1]);
+    if (!Number.isFinite(Number(minPoints)) || !Number.isFinite(winningSlotsNumber)) continue;
+    const winningSlots = String(winningSlotsNumber);
+    const signature = [rewardAmount, minPoints, winningSlots, drawTimeMatch[1]].join('|');
+    const id = `futures-lottery:${crypto.createHash('sha256').update(signature).digest('hex')}`;
+    promotions.set(id, {
+      id,
+      url: FUTURES_LOTTERY_URL,
+      rewardAmount,
+      minPoints,
+      winningSlots,
+    });
+  }
+  return [...promotions.values()];
+}
+
+function parseFuturesLotteryPage(html) {
+  const text = decodeHtml(html);
+  if (!/(?:Счастливый\s*розыгрыш|Lucky Draw)/i.test(text)) {
+    throw new Error('Headless Chrome could not verify the Futures Points Lucky Draw section');
+  }
+  const promotions = extractFuturesLotteryPromotions(html);
+  const announcedCountMatch = text.match(/(?:Анонсировано|Announced)\s*\((\d+)\)/i);
+  if (!announcedCountMatch || (Number(announcedCountMatch[1]) > 0 && promotions.length === 0)) {
+    throw new Error('Headless Chrome could not verify the Futures Points announced lottery cards');
+  }
+  return promotions;
+}
+
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length);
   let next = 0;
@@ -378,10 +455,11 @@ async function collectCorePromotions(chrome) {
   const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
   const categories = discoverCategories(firstHtml);
   const remaining = categories.filter((url) => url !== KNOWN_CATEGORIES[0]);
-  const pageTargets = [...remaining, FUTURES_POINTS_URL];
+  const pageTargets = [...remaining, FUTURES_POINTS_URL, FUTURES_LOTTERY_URL];
   const loadedPages = await mapWithConcurrency(pageTargets, 2, (url) => dumpPage(chrome, url));
   const remainingPages = loadedPages.slice(0, remaining.length);
   const futuresPointsHtml = loadedPages[remaining.length];
+  const futuresLotteryHtml = loadedPages[remaining.length + 1];
   const htmlPages = [firstHtml, ...remainingPages];
   const unique = new Map();
   for (const html of htmlPages) {
@@ -400,10 +478,12 @@ async function collectCorePromotions(chrome) {
     throw new Error('Headless Chrome could not verify the Futures Points upcoming section');
   }
   const futuresPoints = extractFuturesPointPromotions(futuresPointsHtml);
+  const futuresLottery = parseFuturesLotteryPage(futuresLotteryHtml);
   return {
     promotions: [...unique.values()],
     announcementCampaigns: announcements.promotions,
     futuresPoints,
+    futuresLottery,
     categories,
     announcements: {
       articles: announcements.articleCount,
@@ -416,7 +496,7 @@ async function collectCorePromotions(chrome) {
 function requestedSource() {
   const argument = process.argv.find((value) => value.startsWith('--source='));
   const source = argument?.slice('--source='.length) || process.env.GATE_SCRAPE_SOURCE || 'all';
-  if (!['all', 'announcements', 'candy', 'core'].includes(source)) {
+  if (!['all', 'announcements', 'candy', 'core', 'lottery'].includes(source)) {
     throw new Error(`Unknown scrape source: ${source}`);
   }
   return source;
@@ -442,6 +522,8 @@ async function main() {
       failedArticles: announcements.failedArticleCount,
       campaigns: announcements.promotions.length,
     };
+  } else if (source === 'lottery') {
+    payload.futuresLottery = parseFuturesLotteryPage(await dumpPage(chrome, FUTURES_LOTTERY_URL));
   } else {
     Object.assign(payload, await collectCorePromotions(chrome));
   }
@@ -450,7 +532,8 @@ async function main() {
     `Collected ${source}: ${payload.categories?.length || 0} categories, ` +
     `${payload.promotions?.length || 0} promotions, ${payload.announcementCampaigns?.length || 0} announcement campaigns, ` +
     `${payload.candyDrops?.length || 0} Upcoming CandyDrops, ` +
-    `${payload.futuresPoints?.length || 0} Futures Points promotions, and ` +
+    `${payload.futuresPoints?.length || 0} Futures Points promotions, ` +
+    `${payload.futuresLottery?.length || 0} announced lottery cards, and ` +
     `${payload.announcements?.campaigns || 0} campaigns from ${payload.announcements?.articles || 0} recent announcements\n`
   );
   process.stdout.write(JSON.stringify(payload));
@@ -470,7 +553,9 @@ module.exports = {
   extractAnnouncementCampaigns,
   extractCandyDrops,
   extractFixedRewardDetails,
+  extractFuturesLotteryPromotions,
   extractFuturesPointPromotions,
   extractPromotions,
+  parseFuturesLotteryPage,
   parseGateNumber,
 };

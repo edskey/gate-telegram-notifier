@@ -1,7 +1,8 @@
 # Gate partner Telegram notifier
 
 Serverless bot for **new Gate promotion cards**, **CandyDrop Upcoming cards**,
-**Futures Points upcoming airdrops**, and **new Partner Activity transactions**.
+**Futures Points upcoming airdrops and announced Lucky Draw cards**, and
+**new Partner Activity transactions**.
 It persists processed links/events in Upstash Redis and sends each one once to
 Telegram.
 
@@ -33,6 +34,11 @@ Telegram.
 - The public Futures Points `/ru/futures/points/upcoming` section is checked for
   new cards. Minimum required points, points spent, voucher amount, and the
   countdown are stored as a separate deduplication source.
+- The public Futures Points Lucky Draw `Анонсировано` section is a separate
+  source. It extracts the reward amount in the original token (without price
+  conversion), minimum required points, and winning slots. Draw time is used
+  only inside the stable event ID so identical-looking draws on different dates
+  are still delivered once each. Its first run is a no-spam baseline.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.

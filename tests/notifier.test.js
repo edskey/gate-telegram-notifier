@@ -7,6 +7,7 @@ const {
   extractAnnouncementCampaigns,
   extractCandyDrops,
   extractFixedRewardDetails,
+  extractFuturesLotteryPromotions,
   extractFuturesPointPromotions,
   extractPromotions,
 } = require('../scripts/scrape-gate-promotions');
@@ -149,6 +150,32 @@ test('scraper extracts Futures Points upcoming cards and excludes the changing t
   });
 });
 
+test('scraper extracts announced Futures Points lottery cards without price conversion', () => {
+  const card = (drawTime, participants = '25 913') => `<div class="lottery-card">
+    <div>Сумма награды</div><div><b>15</b> USD1</div><div>Объявлено</div>
+    <div>Потрачено баллов</div><div>20</div>
+    <div>Мин. баллов требуется</div><div>70</div>
+    <div>Участники</div><div>${participants}</div>
+    <div>Выигрышные слоты</div><div>7 000</div>
+    <div>Время розыгрыша</div><div>${drawTime}</div>
+  </div>`;
+  const first = extractFuturesLotteryPromotions(card('2026-07-29 14:00:00'));
+  const changedParticipants = extractFuturesLotteryPromotions(card('2026-07-29 14:00:00', '27 000'));
+  const otherDraw = extractFuturesLotteryPromotions(card('2026-07-27 14:00:00'));
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0].id, changedParticipants[0].id);
+  assert.notEqual(first[0].id, otherDraw[0].id);
+  assert.match(first[0].id, /^futures-lottery:[a-f0-9]{64}$/);
+  assert.deepEqual({ ...first[0], id: undefined }, {
+    id: undefined,
+    url: 'https://www.gate.com/ru/futures/points/ended?section=lottery',
+    rewardAmount: '15 USD1',
+    minPoints: '70',
+    winningSlots: '7000',
+  });
+});
+
 test('protected POST creates a baseline without synthetic test messages', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',
@@ -228,6 +255,13 @@ test('protected POST creates a baseline without synthetic test messages', async 
         fixedRewards: { totalAmount: 1000, individualCap: 10, symbol: 'SKHYG', hasCandy: true },
       }],
       futuresPoints: [],
+      futuresLottery: [{
+        id: 'futures-lottery:baseline',
+        url: 'https://www.gate.com/ru/futures/points/ended?section=lottery',
+        rewardAmount: '15 USD1',
+        minPoints: '70',
+        winningSlots: '7000',
+      }],
       categories: ['https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing'],
     },
   };
@@ -246,7 +280,9 @@ test('protected POST creates a baseline without synthetic test messages', async 
   assert.equal(responseBody.announcementCampaigns, 1);
   assert.equal(responseBody.transactions, 4);
   assert.equal(responseBody.candyDrops, 1);
+  assert.equal(responseBody.futuresLottery, 1);
   assert(responseBody.initialized.includes('announcementCampaigns'));
+  assert(responseBody.initialized.includes('futuresLottery'));
   assert.equal(telegramBodies.length, 0);
   assert.equal('testNotification' in responseBody, false);
   assert.deepEqual(sideEffects, [
@@ -271,11 +307,13 @@ test('CandyDrop-only payload sends promptly without touching unrelated sources',
     promotions: { sentIds: ['https://www.gate.com/campaigns/known'] },
     candyDrops: { sentIds: [] },
     futuresPoints: { sentIds: ['futures-points:known'] },
+    futuresLottery: { sentIds: ['futures-lottery:known'] },
   };
   const unrelatedState = {
     transactions: JSON.parse(JSON.stringify(redisState.transactions)),
     promotions: JSON.parse(JSON.stringify(redisState.promotions)),
     futuresPoints: JSON.parse(JSON.stringify(redisState.futuresPoints)),
+    futuresLottery: JSON.parse(JSON.stringify(redisState.futuresLottery)),
   };
   const messages = [];
   let gateCalls = 0;
@@ -335,6 +373,7 @@ test('CandyDrop-only payload sends promptly without touching unrelated sources',
   assert.deepEqual(redisState.transactions, unrelatedState.transactions);
   assert.deepEqual(redisState.promotions, unrelatedState.promotions);
   assert.deepEqual(redisState.futuresPoints, unrelatedState.futuresPoints);
+  assert.deepEqual(redisState.futuresLottery, unrelatedState.futuresLottery);
   assert(redisState.candyDrops.sentIds.includes('candy:FAST-1'));
 });
 
@@ -558,6 +597,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
     promotions: { sentIds: ['https://www.gate.com/campaigns/known'] },
     candyDrops: { sentIds: ['candy:KNOWN-1'] },
     futuresPoints: { sentIds: ['futures-points:known'] },
+    futuresLottery: { sentIds: ['futures-lottery:known'] },
   };
   const messages = [];
   const coinGeckoRequests = [];
@@ -632,6 +672,18 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
           minPoints: '40', spentPoints: '20', voucherAmount: '100 USDT', startsIn: '1Д15:26:37',
         },
       ],
+      futuresLottery: [
+        {
+          id: 'futures-lottery:known',
+          url: 'https://www.gate.com/ru/futures/points/ended?section=lottery',
+          rewardAmount: '3 GT', minPoints: '50', winningSlots: '5000',
+        },
+        {
+          id: 'futures-lottery:new',
+          url: 'https://www.gate.com/ru/futures/points/ended?section=lottery',
+          rewardAmount: '15 USD1', minPoints: '70', winningSlots: '7000',
+        },
+      ],
       categories: [],
     },
   });
@@ -650,7 +702,8 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert.equal(first.status, 200);
   assert.equal(first.body.sent.candyDrops, 2);
   assert.equal(first.body.sent.futuresPoints, 1);
-  assert.equal(messages.length, 3);
+  assert.equal(first.body.sent.futuresLottery, 1);
+  assert.equal(messages.length, 4);
   assert(messages.some((message) => message.text.includes('NEW1')));
   assert(messages.some((message) => message.text.includes('NEW2')));
   assert(messages.every((message) => message.text.startsWith('👇')));
@@ -669,10 +722,16 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert.match(futuresMessage.text, /Потраченные баллы:<\/b> <b>20<\/b>/);
   assert.match(futuresMessage.text, /Сумма ваучера:<\/b> <b>100 USDT<\/b>/);
   assert.match(futuresMessage.text, /Ебашим через:<\/u><\/b> <b>1Д<\/b> <b>15:26:37<\/b>/);
+  const lotteryMessage = messages.find((message) => message.text.includes('Счастливый розыгрыш'));
+  assert.match(lotteryMessage.text, /Сумма награды:<\/b> <b>15 USD1<\/b>/);
+  assert.match(lotteryMessage.text, /Мин\. баллов требуется:<\/b> <b>70<\/b>/);
+  assert.match(lotteryMessage.text, /Выигрышные слоты:<\/b> <b>7\s000<\/b>/);
+  assert.match(lotteryMessage.text, /futures\/points\/ended\?section=lottery/);
 
   const second = await invoke();
   assert.equal(second.status, 200);
   assert.equal(second.body.sent.candyDrops, 0);
   assert.equal(second.body.sent.futuresPoints, 0);
-  assert.equal(messages.length, 3);
+  assert.equal(second.body.sent.futuresLottery, 0);
+  assert.equal(messages.length, 4);
 });

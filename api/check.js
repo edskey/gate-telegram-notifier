@@ -236,6 +236,18 @@ function formatFuturesPoints(promotion) {
   ].join('\n');
 }
 
+function formatFuturesLottery(promotion) {
+  return [
+    '👇 <b>Счастливый розыгрыш — Анонсировано</b>',
+    '',
+    `🔵 <b>Сумма награды:</b> <b>${escapeTelegramHtml(promotion.rewardAmount)}</b>`,
+    `🔵 <b>Мин. баллов требуется:</b> <b>${escapeTelegramHtml(promotion.minPoints)}</b>`,
+    `🔵 <b>Выигрышные слоты:</b> <b>${escapeTelegramHtml(formatNumber(promotion.winningSlots, 0))}</b>`,
+    '',
+    `🔵 <b>Промка:</b> <a href="${escapeTelegramHtml(promotion.url)}">Открыть</a>`,
+  ].join('\n');
+}
+
 function requestBody(req) {
   let body = req.body;
   if (Buffer.isBuffer(body)) body = body.toString('utf8');
@@ -328,6 +340,20 @@ function futuresPointsFromRequest(req) {
   return { futuresPoints };
 }
 
+function futuresLotteryFromRequest(req) {
+  const body = requestBody(req);
+  if (!body || !Array.isArray(body.futuresLottery)) return null;
+  const futuresLottery = body.futuresLottery.slice(0, MAX_SENT_IDS).map((item) => ({
+    id: String(item.id || '').slice(0, 1000),
+    url: String(item.url || '').slice(0, 2000),
+    rewardAmount: String(item.rewardAmount || '').slice(0, 200),
+    minPoints: String(item.minPoints || '').slice(0, 100),
+    winningSlots: String(item.winningSlots || '').slice(0, 100),
+  })).filter((item) => item.id && item.url && item.rewardAmount && item.minPoints && item.winningSlots);
+  if (futuresLottery.length !== body.futuresLottery.slice(0, MAX_SENT_IDS).length) return null;
+  return { futuresLottery };
+}
+
 async function sendTelegram(text) {
   const token = env('TELEGRAM_BOT_TOKEN').trim();
   const chatId = env('TELEGRAM_CHAT_ID').trim();
@@ -376,10 +402,12 @@ async function handler(req, res) {
   const hasAnnouncementCampaigns = hasPayload('announcementCampaigns');
   const hasCandyDrops = hasPayload('candyDrops');
   const hasFuturesPoints = hasPayload('futuresPoints');
+  const hasFuturesLottery = hasPayload('futuresLottery');
   const scheduledPromotions = hasPromotions ? promotionsFromRequest(req) : null;
   const scheduledAnnouncementCampaigns = hasAnnouncementCampaigns ? announcementCampaignsFromRequest(req) : null;
   const scheduledCandyDrops = hasCandyDrops ? candyDropsFromRequest(req) : null;
   const scheduledFuturesPoints = hasFuturesPoints ? futuresPointsFromRequest(req) : null;
+  const scheduledFuturesLottery = hasFuturesLottery ? futuresLotteryFromRequest(req) : null;
   const checkTransactions = req.method === 'GET' || hasPromotions;
   const skipped = Symbol('skipped');
 
@@ -398,6 +426,7 @@ async function handler(req, res) {
       announcementCampaignResult,
       candyDropResult,
       futuresPointsResult,
+      futuresLotteryResult,
       savedState,
     ] = await Promise.all([
       checkTransactions
@@ -423,6 +452,11 @@ async function handler(req, res) {
         : scheduledFuturesPoints
         ? Promise.resolve(scheduledFuturesPoints)
         : Promise.reject(new Error('Futures Points payload from scheduler browser is missing or invalid')),
+      !hasFuturesLottery
+        ? Promise.resolve(skipped)
+        : scheduledFuturesLottery
+        ? Promise.resolve(scheduledFuturesLottery)
+        : Promise.reject(new Error('Futures Points lottery payload from scheduler browser is missing or invalid')),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
       (value) => value === skipped ? { skipped: true } : { ok: true, value },
@@ -433,7 +467,14 @@ async function handler(req, res) {
     const result = {
       ok: true,
       initialized: [],
-      sent: { transactions: 0, promotions: 0, announcementCampaigns: 0, candyDrops: 0, futuresPoints: 0 },
+      sent: {
+        transactions: 0,
+        promotions: 0,
+        announcementCampaigns: 0,
+        candyDrops: 0,
+        futuresPoints: 0,
+        futuresLottery: 0,
+      },
       errors: {},
     };
     const deliveries = [];
@@ -559,6 +600,28 @@ async function handler(req, res) {
       result.sent.futuresPoints = fresh.length;
     } else {
       result.errors.futuresPoints = futuresPointsResult.error.message;
+    }
+
+    if (futuresLotteryResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (futuresLotteryResult.ok) {
+      const { futuresLottery } = futuresLotteryResult.value;
+      const currentIds = futuresLottery.map((promotion) => promotion.id);
+      const known = initializeSource(state, 'futuresLottery', currentIds);
+      if (known.initialized) result.initialized.push('futuresLottery');
+      const seen = new Set(known.sentIds || []);
+      const fresh = known.initialized ? [] : futuresLottery.filter((promotion) => !seen.has(promotion.id));
+      deliveries.push(...fresh.reverse().map((promotion) => ({
+        source: 'futuresLottery',
+        id: promotion.id,
+        text: formatFuturesLottery(promotion),
+      })));
+      state.futuresLottery = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.futuresLottery = currentIds;
+      result.futuresLottery = futuresLottery.length;
+      result.sent.futuresLottery = fresh.length;
+    } else {
+      result.errors.futuresLottery = futuresLotteryResult.error.message;
     }
 
     state.initializedAt = state.initializedAt || new Date().toISOString();
