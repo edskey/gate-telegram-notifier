@@ -291,6 +291,62 @@ test('protected POST creates a baseline without synthetic test messages', async 
   ]);
 });
 
+test('manual test header sends exactly one silent Futures Lottery example without changing source IDs', async (context) => {
+  Object.assign(process.env, {
+    CHECK_SECRET: 'test-check-secret',
+    UPSTASH_REDIS_REST_URL: 'https://redis.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
+    TELEGRAM_BOT_TOKEN: 'test-telegram-token',
+    TELEGRAM_CHAT_ID: '@ggwp_announcements',
+  });
+  let redisState = { futuresLottery: { sentIds: [] } };
+  const messages = [];
+  context.mock.method(global, 'fetch', async (url, options = {}) => {
+    const target = String(url);
+    if (target === 'https://redis.test') {
+      const command = JSON.parse(options.body);
+      if (command[0] === 'SET' && command.includes('NX')) {
+        return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+      }
+      if (command[0] === 'GET') {
+        return new Response(JSON.stringify({ result: JSON.stringify(redisState) }), { status: 200 });
+      }
+      if (command[0] === 'SET') redisState = JSON.parse(command[2]);
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    }
+    if (target.includes('/sendMessage')) {
+      messages.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${target}`);
+  });
+
+  let status;
+  let responseBody;
+  await handler({
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer test-check-secret',
+      'x-gate-bot-test': 'true',
+    },
+    query: {},
+    body: { futuresLottery: [] },
+  }, {
+    status(value) { status = value; return this; },
+    setHeader() {},
+    end(value) { responseBody = JSON.parse(value); },
+  });
+
+  assert.equal(status, 200);
+  assert.equal(responseBody.testNotification, true);
+  assert.equal(responseBody.testNotifications, 1);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].disable_notification, true);
+  assert.match(messages[0].text, /Тест: Счастливый розыгрыш — Анонсировано/);
+  assert.match(messages[0].text, /Сумма награды:<\/b> <b>15 USD1<\/b>/);
+  assert.deepEqual(redisState.futuresLottery.sentIds, []);
+});
+
 test('CandyDrop-only payload sends promptly without touching unrelated sources', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',

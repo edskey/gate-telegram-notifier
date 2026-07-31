@@ -98,9 +98,14 @@ Telegram. Channel formatting can be changed independently without affecting the
 deduplication rule.
 
 The two manual GitHub Actions triggers run the same production checks as their
-five-minute schedules; neither sends synthetic test messages. The protected
+five-minute schedules unless their explicit test option is enabled. The protected
 Vercel endpoint accepts source-specific payloads without clearing or changing
 the state of omitted sources. If several genuinely new cards appear between
 checks, each is sent as a separate message. Delivery state is checkpointed
 after every accepted message, so a partial Telegram failure retries only the
 remaining items.
+
+For a one-off format check, manually run **Check Gate promotions and partner
+activity** with `test_notification` enabled. It sends exactly one silent
+Futures Lottery example and does not add the synthetic event to Redis state.
+Scheduled runs always leave this option disabled.

@@ -236,9 +236,12 @@ function formatFuturesPoints(promotion) {
   ].join('\n');
 }
 
-function formatFuturesLottery(promotion) {
+function formatFuturesLottery(promotion, { test = false } = {}) {
+  const heading = test
+    ? 'Тест: Счастливый розыгрыш — Анонсировано'
+    : 'Счастливый розыгрыш — Анонсировано';
   return [
-    '👇 <b>Счастливый розыгрыш — Анонсировано</b>',
+    `👇 <b>${heading}</b>`,
     '',
     `🔵 <b>Сумма награды:</b> <b>${escapeTelegramHtml(promotion.rewardAmount)}</b>`,
     `🔵 <b>Мин. баллов требуется:</b> <b>${escapeTelegramHtml(promotion.minPoints)}</b>`,
@@ -354,7 +357,7 @@ function futuresLotteryFromRequest(req) {
   return { futuresLottery };
 }
 
-async function sendTelegram(text) {
+async function sendTelegram(text, { silent = false } = {}) {
   const token = env('TELEGRAM_BOT_TOKEN').trim();
   const chatId = env('TELEGRAM_CHAT_ID').trim();
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -364,7 +367,7 @@ async function sendTelegram(text) {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
-      disable_notification: false,
+      disable_notification: silent,
     }),
   });
   const body = await response.json();
@@ -396,6 +399,7 @@ async function handler(req, res) {
     return respond(res, 405, { error: 'method_not_allowed' });
   }
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
+  const testNotification = req.method === 'POST' && req.headers['x-gate-bot-test'] === 'true';
   const body = requestBody(req);
   const hasPayload = (name) => body && Object.prototype.hasOwnProperty.call(body, name);
   const hasPromotions = hasPayload('promotions');
@@ -644,6 +648,16 @@ async function handler(req, res) {
     }
     state.checkedAt = new Date().toISOString();
     await saveState(state);
+    if (testNotification) {
+      await sendTelegram(formatFuturesLottery({
+        url: 'https://www.gate.com/ru/futures/points/ended?section=lottery',
+        rewardAmount: '15 USD1',
+        minPoints: '70',
+        winningSlots: '7000',
+      }, { test: true }), { silent: true });
+      result.testNotification = true;
+      result.testNotifications = 1;
+    }
     const hasErrors = Object.keys(result.errors).length > 0;
     result.ok = !hasErrors;
     return respond(res, hasErrors ? 502 : 200, result);
