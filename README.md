@@ -1,6 +1,7 @@
 # Gate partner Telegram notifier
 
 Serverless bot for **new Gate promotion cards**, **CandyDrop Upcoming cards**,
+**active Launchpool cards**,
 **Futures Points upcoming airdrops and announced Lucky Draw cards**, and
 **new Partner Activity transactions**.
 It persists processed links/events in Upstash Redis and sends each one once to
@@ -39,12 +40,18 @@ Telegram.
   conversion), minimum required points, and winning slots. Draw time is used
   only inside the stable event ID so identical-looking draws on different dates
   are still delivered once each. Its first run is a no-spam baseline.
+- The public `/ru/launchpool` page is checked in its own lightweight workflow.
+  Each active or upcoming project is keyed by its stable project ID/link, so
+  changing APR values and countdowns do not create duplicate notifications.
+  The alert includes the project, total rewards with Gate's displayed USDT
+  equivalent, staking period, and Russian detail link. Existing cards become
+  the first-run baseline and are not published retroactively.
 - First run is a baseline; it sends no old transactions.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later transactions.
 - Independent GitHub Actions triggers every five minutes for Vercel Hobby.
-  CandyDrop runs in its own lightweight workflow and does not wait for or fail
-  with the slower Rewards Hub/Futures scan.
+  CandyDrop and Launchpool run in their own lightweight workflows and do not
+  wait for or fail with the slower Rewards Hub/Futures scan.
 - Browser page loads are globally limited to two concurrent Chrome processes.
   Each failed or empty page is retried up to three times with a longer render
   budget before the workflow reports a real failure.

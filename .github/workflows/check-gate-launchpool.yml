@@ -1,0 +1,41 @@
+name: Check Gate Launchpool
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-telegram-notifier-launchpool
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout bot source
+        uses: actions/checkout@v4
+
+      - name: Collect active Gate Launchpools
+        run: node scripts/scrape-gate-promotions.js --source=launchpool > /tmp/gate-launchpools.json
+
+      - name: Trigger protected Vercel check
+        env:
+          CHECK_URL: ${{ secrets.VERCEL_CHECK_URL }}
+          CHECK_SECRET: ${{ secrets.CHECK_SECRET }}
+        run: |
+          test -n "$CHECK_URL"
+          test -n "$CHECK_SECRET"
+          curl --fail-with-body --silent --show-error --max-time 20 \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            -X POST \
+            -H "Authorization: Bearer $CHECK_SECRET" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/gate-launchpools.json \
+            "$CHECK_URL"

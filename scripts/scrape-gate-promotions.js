@@ -6,6 +6,7 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const ORIGIN = 'https://www.gate.com';
 const CANDY_DROP_URL = `${ORIGIN}/ru/candy-drop`;
+const LAUNCHPOOL_URL = `${ORIGIN}/ru/launchpool`;
 const FUTURES_POINTS_URL = `${ORIGIN}/ru/futures/points/upcoming`;
 const FUTURES_LOTTERY_URL = `${ORIGIN}/ru/futures/points/ended?section=lottery`;
 const ANNOUNCEMENTS_ACTIVITY_URL = `${ORIGIN}/ru/announcements/activity`;
@@ -26,13 +27,14 @@ function findChrome() {
   throw new Error('Chrome executable was not found on the scheduler');
 }
 
-async function dumpPageOnce(chrome, url, virtualTimeBudget) {
+async function dumpPageOnce(chrome, url, virtualTimeBudget, { windowSize } = {}) {
   const { stdout } = await execFileAsync(chrome, [
     '--headless=new',
     '--no-sandbox',
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--disable-blink-features=AutomationControlled',
+    ...(windowSize ? [`--window-size=${windowSize}`] : []),
     `--user-agent=${USER_AGENT}`,
     `--virtual-time-budget=${virtualTimeBudget}`,
     '--run-all-compositor-stages-before-draw',
@@ -261,6 +263,79 @@ function extractCandyDrops(html) {
   return candyDrops;
 }
 
+function extractLaunchpoolPromotions(html) {
+  const promotions = new Map();
+  const anchorPattern = /<a\b[^>]*href=(?:"([^"]*\/launchpool\/[^"#]+)"|'([^']*\/launchpool\/[^'#]+)')[^>]*>([\s\S]*?)<\/a>/gi;
+  let anchorMatch;
+  while ((anchorMatch = anchorPattern.exec(html)) !== null) {
+    let parsedUrl;
+    try { parsedUrl = new URL(anchorMatch[1] || anchorMatch[2], ORIGIN); } catch { continue; }
+    const pathMatch = parsedUrl.pathname.match(/\/(?:ru|en)?\/?launchpool\/([^/?#]+)/i);
+    if (!pathMatch) continue;
+
+    const windowStart = Math.max(0, anchorMatch.index - 50000);
+    const prefix = html.slice(windowStart, anchorMatch.index);
+    const divPattern = /<div\b[^>]*>/gi;
+    const starts = [];
+    let divMatch;
+    while ((divMatch = divPattern.exec(prefix)) !== null) starts.push(windowStart + divMatch.index);
+
+    let cardHtml;
+    for (const start of starts.slice(-35).reverse()) {
+      const candidate = balancedDiv(html, start);
+      if (!candidate || !candidate.includes(anchorMatch[0])) continue;
+      const candidateText = decodeHtml(candidate);
+      if (
+        /(?:Всего\s*Наград|Total Rewards)/i.test(candidateText) &&
+        /(?:Период\s*стейкинга|Staking Period)/i.test(candidateText) &&
+        /(?:Заканчивается\s*в|Ends? in|Начинается\s*в|Starts? in)/i.test(candidateText)
+      ) {
+        cardHtml = candidate;
+        break;
+      }
+    }
+    if (!cardHtml) continue;
+
+    const text = decodeHtml(cardHtml);
+    const project = decodeHtml(anchorMatch[3]).trim().slice(0, 100);
+    const rewardsMatch = text.match(
+      /(?:Всего\s*Наград|Total Rewards)\s*([0-9][0-9\s.,]*\s*[A-Z][A-Z0-9._-]*)\s*(?:≈|~)\s*((?:[0-9][0-9\s.,]*|--)\s*USDT)/i
+    );
+    const periodMatch = text.match(
+      /(?:Период\s*стейкинга|Staking Period)\s*([0-9][0-9\s.,]*\s*(?:дня\s*\(дней\)|дн(?:я|ей)?|days?))/i
+    );
+    if (!project || !rewardsMatch || !periodMatch) continue;
+
+    const projectKey = parsedUrl.searchParams.get('pid') || decodeURIComponent(pathMatch[1]);
+    const localizedPath = parsedUrl.pathname.replace(/^\/(?:ru|en)(?=\/)/i, '/ru');
+    const pidQuery = parsedUrl.searchParams.get('pid');
+    const url = `${ORIGIN}${localizedPath}${pidQuery ? `?pid=${encodeURIComponent(pidQuery)}` : ''}`;
+    const id = `launchpool:${projectKey}`;
+    promotions.set(id, {
+      id,
+      url,
+      project,
+      totalRewards: `${rewardsMatch[1]} ≈ ${rewardsMatch[2]}`.replace(/\s+/g, ' ').trim(),
+      stakingPeriod: periodMatch[1].replace(/\s+/g, ' ').trim(),
+    });
+  }
+  return [...promotions.values()];
+}
+
+function parseLaunchpoolPage(html) {
+  const text = decodeHtml(html);
+  if (!/Launchpool/i.test(text)) throw new Error('Headless Chrome could not verify the Gate Launchpool page');
+  const promotions = extractLaunchpoolPromotions(html);
+  const ongoingCount = Number(text.match(/(?:В\s*процессе|Ongoing)\s*\((\d+)\)/i)?.[1] || 0);
+  const upcomingCount = Number(text.match(/(?:Предстоящие|Upcoming)\s*\((\d+)\)/i)?.[1] || 0);
+  const expected = ongoingCount + upcomingCount;
+  const explicitEmpty = /(?:Сейчас\s*проектов\s*нет|No projects (?:at the moment|available))/i.test(text);
+  if ((expected > promotions.length) || (promotions.length === 0 && !explicitEmpty && expected === 0)) {
+    throw new Error(`Headless Chrome could not verify every active Launchpool card (${promotions.length}/${expected || '?'})`);
+  }
+  return promotions;
+}
+
 function extractFuturesPointPromotions(html) {
   const promotions = new Map();
   const labelPattern = /(?:Мин\.\s*требуемые\s*баллы|Minimum Required Points)/gi;
@@ -420,6 +495,23 @@ async function collectCandyDrops(chrome) {
   });
 }
 
+async function collectLaunchpools(chrome) {
+  const budgets = [15000, 24000, 33000];
+  let lastError;
+  for (let attempt = 0; attempt < budgets.length; attempt += 1) {
+    try {
+      const html = await dumpPageOnce(chrome, LAUNCHPOOL_URL, budgets[attempt], { windowSize: '1440,1200' });
+      return parseLaunchpoolPage(html);
+    } catch (error) {
+      lastError = error;
+      const reason = String(error.message || error).replace(/\s+/g, ' ').slice(0, 500);
+      process.stderr.write(`Gate Launchpool attempt ${attempt + 1}/${budgets.length} failed: ${reason}\n`);
+      if (attempt < budgets.length - 1) await delay(1000 * (2 ** attempt));
+    }
+  }
+  throw new Error(`Gate Launchpool failed after ${budgets.length} attempts: ${lastError?.message || lastError}`);
+}
+
 async function collectAnnouncementCampaigns(chrome) {
   const indexHtml = await dumpPage(chrome, ANNOUNCEMENTS_ACTIVITY_URL);
   if (!/(?:Latest Events|Последние события)/i.test(decodeHtml(indexHtml))) {
@@ -496,7 +588,7 @@ async function collectCorePromotions(chrome) {
 function requestedSource() {
   const argument = process.argv.find((value) => value.startsWith('--source='));
   const source = argument?.slice('--source='.length) || process.env.GATE_SCRAPE_SOURCE || 'all';
-  if (!['all', 'announcements', 'candy', 'core', 'lottery'].includes(source)) {
+  if (!['all', 'announcements', 'candy', 'core', 'launchpool', 'lottery'].includes(source)) {
     throw new Error(`Unknown scrape source: ${source}`);
   }
   return source;
@@ -522,6 +614,8 @@ async function main() {
       failedArticles: announcements.failedArticleCount,
       campaigns: announcements.promotions.length,
     };
+  } else if (source === 'launchpool') {
+    payload.launchpools = await collectLaunchpools(chrome);
   } else if (source === 'lottery') {
     payload.futuresLottery = parseFuturesLotteryPage(await dumpPage(chrome, FUTURES_LOTTERY_URL));
   } else {
@@ -532,6 +626,7 @@ async function main() {
     `Collected ${source}: ${payload.categories?.length || 0} categories, ` +
     `${payload.promotions?.length || 0} promotions, ${payload.announcementCampaigns?.length || 0} announcement campaigns, ` +
     `${payload.candyDrops?.length || 0} Upcoming CandyDrops, ` +
+    `${payload.launchpools?.length || 0} active Launchpools, ` +
     `${payload.futuresPoints?.length || 0} Futures Points promotions, ` +
     `${payload.futuresLottery?.length || 0} announced lottery cards, and ` +
     `${payload.announcements?.campaigns || 0} campaigns from ${payload.announcements?.articles || 0} recent announcements\n`
@@ -555,7 +650,9 @@ module.exports = {
   extractFixedRewardDetails,
   extractFuturesLotteryPromotions,
   extractFuturesPointPromotions,
+  extractLaunchpoolPromotions,
   extractPromotions,
+  parseLaunchpoolPage,
   parseFuturesLotteryPage,
   parseGateNumber,
 };

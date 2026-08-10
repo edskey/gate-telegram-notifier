@@ -251,6 +251,18 @@ function formatFuturesLottery(promotion, { test = false } = {}) {
   ].join('\n');
 }
 
+function formatLaunchpool(promotion) {
+  return [
+    '👇 <b>Новый Launchpool</b>',
+    '',
+    `🔵 <b>Проект:</b> <b>${escapeTelegramHtml(promotion.project)}</b>`,
+    `🔵 <b>Всего наград:</b> <b>${escapeTelegramHtml(promotion.totalRewards)}</b>`,
+    `🔵 <b>Период стейкинга:</b> <b>${escapeTelegramHtml(promotion.stakingPeriod)}</b>`,
+    '',
+    `🔵 <b>Промка:</b> <a href="${escapeTelegramHtml(promotion.url)}">Открыть</a>`,
+  ].join('\n');
+}
+
 function requestBody(req) {
   let body = req.body;
   if (Buffer.isBuffer(body)) body = body.toString('utf8');
@@ -357,6 +369,20 @@ function futuresLotteryFromRequest(req) {
   return { futuresLottery };
 }
 
+function launchpoolsFromRequest(req) {
+  const body = requestBody(req);
+  if (!body || !Array.isArray(body.launchpools)) return null;
+  const launchpools = body.launchpools.slice(0, MAX_SENT_IDS).map((item) => ({
+    id: String(item.id || '').slice(0, 1000),
+    url: String(item.url || '').slice(0, 2000),
+    project: String(item.project || '').slice(0, 100),
+    totalRewards: String(item.totalRewards || '').slice(0, 300),
+    stakingPeriod: String(item.stakingPeriod || '').slice(0, 100),
+  })).filter((item) => item.id && item.url && item.project && item.totalRewards && item.stakingPeriod);
+  if (launchpools.length !== body.launchpools.slice(0, MAX_SENT_IDS).length) return null;
+  return { launchpools };
+}
+
 async function sendTelegram(text, { silent = false } = {}) {
   const token = env('TELEGRAM_BOT_TOKEN').trim();
   const chatId = env('TELEGRAM_CHAT_ID').trim();
@@ -407,11 +433,13 @@ async function handler(req, res) {
   const hasCandyDrops = hasPayload('candyDrops');
   const hasFuturesPoints = hasPayload('futuresPoints');
   const hasFuturesLottery = hasPayload('futuresLottery');
+  const hasLaunchpools = hasPayload('launchpools');
   const scheduledPromotions = hasPromotions ? promotionsFromRequest(req) : null;
   const scheduledAnnouncementCampaigns = hasAnnouncementCampaigns ? announcementCampaignsFromRequest(req) : null;
   const scheduledCandyDrops = hasCandyDrops ? candyDropsFromRequest(req) : null;
   const scheduledFuturesPoints = hasFuturesPoints ? futuresPointsFromRequest(req) : null;
   const scheduledFuturesLottery = hasFuturesLottery ? futuresLotteryFromRequest(req) : null;
+  const scheduledLaunchpools = hasLaunchpools ? launchpoolsFromRequest(req) : null;
   const checkTransactions = req.method === 'GET' || hasPromotions;
   const skipped = Symbol('skipped');
 
@@ -431,6 +459,7 @@ async function handler(req, res) {
       candyDropResult,
       futuresPointsResult,
       futuresLotteryResult,
+      launchpoolResult,
       savedState,
     ] = await Promise.all([
       checkTransactions
@@ -461,6 +490,11 @@ async function handler(req, res) {
         : scheduledFuturesLottery
         ? Promise.resolve(scheduledFuturesLottery)
         : Promise.reject(new Error('Futures Points lottery payload from scheduler browser is missing or invalid')),
+      !hasLaunchpools
+        ? Promise.resolve(skipped)
+        : scheduledLaunchpools
+        ? Promise.resolve(scheduledLaunchpools)
+        : Promise.reject(new Error('Launchpool payload from scheduler browser is missing or invalid')),
       loadState(),
     ].map((promise) => Promise.resolve(promise).then(
       (value) => value === skipped ? { skipped: true } : { ok: true, value },
@@ -478,6 +512,7 @@ async function handler(req, res) {
         candyDrops: 0,
         futuresPoints: 0,
         futuresLottery: 0,
+        launchpools: 0,
       },
       errors: {},
     };
@@ -626,6 +661,28 @@ async function handler(req, res) {
       result.sent.futuresLottery = fresh.length;
     } else {
       result.errors.futuresLottery = futuresLotteryResult.error.message;
+    }
+
+    if (launchpoolResult.skipped) {
+      // A source-specific scheduler request must not touch unrelated state.
+    } else if (launchpoolResult.ok) {
+      const { launchpools } = launchpoolResult.value;
+      const currentIds = launchpools.map((promotion) => promotion.id);
+      const known = initializeSource(state, 'launchpools', currentIds);
+      if (known.initialized) result.initialized.push('launchpools');
+      const seen = new Set(known.sentIds || []);
+      const fresh = known.initialized ? [] : launchpools.filter((promotion) => !seen.has(promotion.id));
+      deliveries.push(...fresh.reverse().map((promotion) => ({
+        source: 'launchpools',
+        id: promotion.id,
+        text: formatLaunchpool(promotion),
+      })));
+      state.launchpools = { sentIds: uniqueIds(known.sentIds || []) };
+      currentIdsBySource.launchpools = currentIds;
+      result.launchpools = launchpools.length;
+      result.sent.launchpools = fresh.length;
+    } else {
+      result.errors.launchpools = launchpoolResult.error.message;
     }
 
     state.initializedAt = state.initializedAt || new Date().toISOString();

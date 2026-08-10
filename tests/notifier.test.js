@@ -9,6 +9,7 @@ const {
   extractFixedRewardDetails,
   extractFuturesLotteryPromotions,
   extractFuturesPointPromotions,
+  extractLaunchpoolPromotions,
   extractPromotions,
 } = require('../scripts/scrape-gate-promotions');
 const handler = require('../api/check');
@@ -123,6 +124,29 @@ test('scraper isolates the Fixed Rewards pool and Individual Cap', () => {
     individualCap: 5,
     symbol: 'RLUSD',
     hasCandy: false,
+  });
+});
+
+test('scraper extracts active Launchpools and keeps changing values out of the id', () => {
+  const card = (usdtValue, timer) => `<div data-page-id="533">
+    <div class="launchpool-card">
+      <div><a href="/ru/launchpool/DOS?pid=533">DOS</a></div>
+      <div>Всего Наград <b>1 410 000 DOS</b> <span>≈ ${usdtValue} USDT</span></div>
+      <div>Период стейкинга <b>14 дня (дней)</b></div>
+      <div>Заканчивается в ${timer}</div>
+    </div>
+  </div>`;
+  const first = extractLaunchpoolPromotions(card('521 700', '13ДН. 22:19:10'));
+  const changed = extractLaunchpoolPromotions(card('506 895', '13ДН. 21:59:10'));
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0].id, changed[0].id);
+  assert.deepEqual(first[0], {
+    id: 'launchpool:533',
+    url: 'https://www.gate.com/ru/launchpool/DOS?pid=533',
+    project: 'DOS',
+    totalRewards: '1 410 000 DOS ≈ 521 700 USDT',
+    stakingPeriod: '14 дня (дней)',
   });
 });
 
@@ -262,6 +286,13 @@ test('protected POST creates a baseline without synthetic test messages', async 
         minPoints: '70',
         winningSlots: '7000',
       }],
+      launchpools: [{
+        id: 'launchpool:533',
+        url: 'https://www.gate.com/ru/launchpool/DOS?pid=533',
+        project: 'DOS',
+        totalRewards: '1 410 000 DOS ≈ 521 700 USDT',
+        stakingPeriod: '14 дня (дней)',
+      }],
       categories: ['https://www.gate.com/ru/rewards_hub/activity-center-1-ongoing'],
     },
   };
@@ -281,8 +312,10 @@ test('protected POST creates a baseline without synthetic test messages', async 
   assert.equal(responseBody.transactions, 4);
   assert.equal(responseBody.candyDrops, 1);
   assert.equal(responseBody.futuresLottery, 1);
+  assert.equal(responseBody.launchpools, 1);
   assert(responseBody.initialized.includes('announcementCampaigns'));
   assert(responseBody.initialized.includes('futuresLottery'));
+  assert(responseBody.initialized.includes('launchpools'));
   assert.equal(telegramBodies.length, 0);
   assert.equal('testNotification' in responseBody, false);
   assert.deepEqual(sideEffects, [
@@ -364,12 +397,14 @@ test('CandyDrop-only payload sends promptly without touching unrelated sources',
     candyDrops: { sentIds: [] },
     futuresPoints: { sentIds: ['futures-points:known'] },
     futuresLottery: { sentIds: ['futures-lottery:known'] },
+    launchpools: { sentIds: ['launchpool:known'] },
   };
   const unrelatedState = {
     transactions: JSON.parse(JSON.stringify(redisState.transactions)),
     promotions: JSON.parse(JSON.stringify(redisState.promotions)),
     futuresPoints: JSON.parse(JSON.stringify(redisState.futuresPoints)),
     futuresLottery: JSON.parse(JSON.stringify(redisState.futuresLottery)),
+    launchpools: JSON.parse(JSON.stringify(redisState.launchpools)),
   };
   const messages = [];
   let gateCalls = 0;
@@ -430,6 +465,7 @@ test('CandyDrop-only payload sends promptly without touching unrelated sources',
   assert.deepEqual(redisState.promotions, unrelatedState.promotions);
   assert.deepEqual(redisState.futuresPoints, unrelatedState.futuresPoints);
   assert.deepEqual(redisState.futuresLottery, unrelatedState.futuresLottery);
+  assert.deepEqual(redisState.launchpools, unrelatedState.launchpools);
   assert(redisState.candyDrops.sentIds.includes('candy:FAST-1'));
 });
 
@@ -654,6 +690,7 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
     candyDrops: { sentIds: ['candy:KNOWN-1'] },
     futuresPoints: { sentIds: ['futures-points:known'] },
     futuresLottery: { sentIds: ['futures-lottery:known'] },
+    launchpools: { sentIds: ['launchpool:known'] },
   };
   const messages = [];
   const coinGeckoRequests = [];
@@ -740,6 +777,20 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
           rewardAmount: '15 USD1', minPoints: '70', winningSlots: '7000',
         },
       ],
+      launchpools: [
+        {
+          id: 'launchpool:known', url: 'https://www.gate.com/ru/launchpool/known',
+          project: 'KNOWN', totalRewards: '10 KNOWN ≈ 10 USDT', stakingPeriod: '7 дня (дней)',
+        },
+        {
+          id: 'launchpool:533', url: 'https://www.gate.com/ru/launchpool/DOS?pid=533',
+          project: 'DOS', totalRewards: '1 410 000 DOS ≈ 521 700 USDT', stakingPeriod: '14 дня (дней)',
+        },
+        {
+          id: 'launchpool:534', url: 'https://www.gate.com/ru/launchpool/NEW?pid=534',
+          project: 'NEW', totalRewards: '500 000 NEW ≈ 25 000 USDT', stakingPeriod: '10 дня (дней)',
+        },
+      ],
       categories: [],
     },
   });
@@ -759,7 +810,8 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert.equal(first.body.sent.candyDrops, 2);
   assert.equal(first.body.sent.futuresPoints, 1);
   assert.equal(first.body.sent.futuresLottery, 1);
-  assert.equal(messages.length, 4);
+  assert.equal(first.body.sent.launchpools, 2);
+  assert.equal(messages.length, 6);
   assert(messages.some((message) => message.text.includes('NEW1')));
   assert(messages.some((message) => message.text.includes('NEW2')));
   assert(messages.every((message) => message.text.startsWith('👇')));
@@ -783,11 +835,16 @@ test('multiple new Upcoming CandyDrops are sent separately and not repeated', as
   assert.match(lotteryMessage.text, /Мин\. баллов требуется:<\/b> <b>70<\/b>/);
   assert.match(lotteryMessage.text, /Выигрышные слоты:<\/b> <b>7\s000<\/b>/);
   assert.match(lotteryMessage.text, /futures\/points\/ended\?section=lottery/);
+  const launchpoolMessage = messages.find((message) => message.text.includes('Новый Launchpool') && message.text.includes('DOS'));
+  assert.match(launchpoolMessage.text, /Всего наград:<\/b> <b>1 410 000 DOS ≈ 521 700 USDT<\/b>/);
+  assert.match(launchpoolMessage.text, /Период стейкинга:<\/b> <b>14 дня \(дней\)<\/b>/);
+  assert.match(launchpoolMessage.text, /launchpool\/DOS\?pid=533/);
 
   const second = await invoke();
   assert.equal(second.status, 200);
   assert.equal(second.body.sent.candyDrops, 0);
   assert.equal(second.body.sent.futuresPoints, 0);
   assert.equal(second.body.sent.futuresLottery, 0);
-  assert.equal(messages.length, 4);
+  assert.equal(second.body.sent.launchpools, 0);
+  assert.equal(messages.length, 6);
 });
