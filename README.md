@@ -2,16 +2,16 @@
 
 Serverless bot for **new Gate promotion cards**, **CandyDrop Upcoming cards**,
 **active Launchpool cards**,
-**Futures Points upcoming airdrops and announced Lucky Draw cards**, and
-**new Partner Activity transactions**.
+and **Futures Points upcoming airdrops and announced Lucky Draw cards**.
 It persists processed links/events in Upstash Redis and sends each one once to
 Telegram.
 
 ## What is implemented
 
 - `GET`/`POST /api/check`: protected trigger endpoint.
-- Gate API v4 HMAC-SHA512 signing and a request to
-  `/rebate/partner/transaction_history`.
+- Gate API v4 signing remains available for an explicitly enabled manual
+  diagnostic request. Scheduled workflows never send partner trade/commission
+  records because those records are not promotion cards.
 - GitHub Actions uses its preinstalled headless Chrome to read public Gate
   Activity Center cards. It sends the extracted IDs, text, and links to the
   protected Vercel endpoint; no account cookies or web session are used.
@@ -46,9 +46,9 @@ Telegram.
   The alert includes the project, total rewards with Gate's displayed USDT
   equivalent, staking period, and Russian detail link. Existing cards become
   the first-run baseline and are not published retroactively.
-- First run is a baseline; it sends no old transactions.
+- First run of every promotion source is a no-spam baseline.
 - Durable deduplication in Upstash Redis.
-- Telegram notifications for later transactions.
+- Telegram notifications for later promotion cards.
 - Independent GitHub Actions triggers every five minutes for Vercel Hobby.
   CandyDrop and Launchpool run in their own lightweight workflows and do not
   wait for or fail with the slower Rewards Hub/Futures scan.
@@ -60,8 +60,9 @@ The scheduler starts with the known Activity Center categories and discovers
 additional `activity-center-*-ongoing` links from the live page. It scans every
 category plus recent Latest Events articles and deduplicates matching promotion
 links across all sources. A failed announcement article is logged and retried on
-the next run without deleting previously stored campaign IDs. The signed Gate
-API remains the separate source for Partner Activity transactions.
+the next run without deleting previously stored campaign IDs. The Gate partner
+transaction ledger is disabled for scheduled POST runs; it can only be queried
+manually when `ENABLE_PARTNER_TRANSACTION_ALERTS=true` is deliberately set.
 
 ## Setup
 

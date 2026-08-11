@@ -440,7 +440,11 @@ async function handler(req, res) {
   const scheduledFuturesPoints = hasFuturesPoints ? futuresPointsFromRequest(req) : null;
   const scheduledFuturesLottery = hasFuturesLottery ? futuresLotteryFromRequest(req) : null;
   const scheduledLaunchpools = hasLaunchpools ? launchpoolsFromRequest(req) : null;
-  const checkTransactions = req.method === 'GET' || hasPromotions;
+  // Partner transaction history is a commission/trade ledger, not a source of
+  // promotion cards. Never couple it to scheduled POST payloads: doing so can
+  // flood Telegram with unrelated trades when the transaction baseline moves.
+  // Keep it available only for an explicitly enabled manual GET diagnostic.
+  const checkTransactions = req.method === 'GET' && process.env.ENABLE_PARTNER_TRANSACTION_ALERTS === 'true';
   const skipped = Symbol('skipped');
 
   let acquiredLock = false;

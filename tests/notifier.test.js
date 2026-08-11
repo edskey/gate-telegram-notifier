@@ -205,6 +205,7 @@ test('protected POST creates a baseline without synthetic test messages', async 
     CHECK_SECRET: 'test-check-secret',
     GATE_API_KEY: 'test-gate-key',
     GATE_API_SECRET: 'test-gate-secret',
+    ENABLE_PARTNER_TRANSACTION_ALERTS: 'true',
     UPSTASH_REDIS_REST_URL: 'https://redis.test',
     UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
     TELEGRAM_BOT_TOKEN: 'test-telegram-token',
@@ -213,10 +214,12 @@ test('protected POST creates a baseline without synthetic test messages', async 
 
   const telegramBodies = [];
   const sideEffects = [];
+  let gateCalls = 0;
   context.mock.method(global, 'fetch', async (url, options = {}) => {
     const target = String(url);
     if (target.startsWith('https://api.gateio.ws/')) {
-      return new Response(JSON.stringify([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]), { status: 200 });
+      gateCalls += 1;
+      throw new Error('Scheduled promotion POST must not query partner transactions');
     }
     if (target === 'https://redis.test') {
       const command = JSON.parse(options.body);
@@ -309,7 +312,8 @@ test('protected POST creates a baseline without synthetic test messages', async 
   assert.equal(status, 200);
   assert.equal(responseBody.promotions, 3);
   assert.equal(responseBody.announcementCampaigns, 1);
-  assert.equal(responseBody.transactions, 4);
+  assert.equal(responseBody.sent.transactions, 0);
+  assert.equal(gateCalls, 0);
   assert.equal(responseBody.candyDrops, 1);
   assert.equal(responseBody.futuresLottery, 1);
   assert.equal(responseBody.launchpools, 1);
