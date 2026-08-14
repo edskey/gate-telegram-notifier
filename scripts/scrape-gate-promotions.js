@@ -11,7 +11,12 @@ const FUTURES_POINTS_URL = `${ORIGIN}/ru/futures/points/upcoming`;
 const FUTURES_LOTTERY_URL = `${ORIGIN}/ru/futures/points/ended?section=lottery`;
 const ANNOUNCEMENTS_ACTIVITY_URL = `${ORIGIN}/ru/announcements/activity`;
 const ANNOUNCEMENT_ARTICLE_LIMIT = 15;
-const KNOWN_CATEGORIES = [1, 4, 1066, 213, 14, 17, 12, 1037]
+const REWARD_HUB_CATEGORY_IDS = {
+  fast: [14, 213, 1066, 1],
+  'half-hour': [17],
+  hourly: [1037, 7],
+};
+const KNOWN_CATEGORIES = [...new Set(Object.values(REWARD_HUB_CATEGORY_IDS).flat())]
   .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
 
@@ -543,40 +548,56 @@ async function collectAnnouncementCampaigns(chrome) {
   };
 }
 
-async function collectCorePromotions(chrome) {
-  const firstHtml = await dumpPage(chrome, KNOWN_CATEGORIES[0]);
-  const categories = discoverCategories(firstHtml);
-  const remaining = categories.filter((url) => url !== KNOWN_CATEGORIES[0]);
-  const pageTargets = [...remaining, FUTURES_POINTS_URL, FUTURES_LOTTERY_URL];
-  const loadedPages = await mapWithConcurrency(pageTargets, 2, (url) => dumpPage(chrome, url));
-  const remainingPages = loadedPages.slice(0, remaining.length);
-  const futuresPointsHtml = loadedPages[remaining.length];
-  const futuresLotteryHtml = loadedPages[remaining.length + 1];
-  const htmlPages = [firstHtml, ...remainingPages];
+function categoryUrlsFor(source) {
+  return (REWARD_HUB_CATEGORY_IDS[source] || [])
+    .map((id) => `${ORIGIN}/ru/rewards_hub/activity-center-${id}-ongoing`);
+}
+
+async function collectRewardHubPromotions(chrome, source) {
+  const categories = categoryUrlsFor(source);
+  const htmlPages = await mapWithConcurrency(categories, 2, (url) => dumpPage(chrome, url));
   const unique = new Map();
-  for (const html of htmlPages) {
-    for (const promotion of extractPromotions(html)) {
+  for (let index = 0; index < htmlPages.length; index += 1) {
+    const html = htmlPages[index];
+    const pagePromotions = extractPromotions(html);
+    const pageText = decodeHtml(html);
+    if (pagePromotions.length === 0 && !/(?:Rewards Hub|Центр наград|Нет (?:доступных )?(?:акций|заданий)|No (?:activities|tasks))/i.test(pageText)) {
+      throw new Error(`Headless Chrome could not verify the Rewards Hub page ${categories[index]}`);
+    }
+    for (const promotion of pagePromotions) {
       if (!unique.has(promotion.id)) unique.set(promotion.id, promotion);
     }
   }
-  let announcements = { promotions: [], articleCount: 0, failedArticleCount: 0 };
-  try {
-    announcements = await collectAnnouncementCampaigns(chrome);
-  } catch (error) {
-    process.stderr.write(`Gate announcements source failed: ${error.message || error}\n`);
-  }
-  if (unique.size === 0) throw new Error('Headless Chrome found no Gate promotion cards');
+  return {
+    promotions: [...unique.values()],
+    categories,
+    promotionScan: { complete: true, pageCount: categories.length },
+  };
+}
+
+async function collectFastPromotions(chrome) {
+  const rewardHub = await collectRewardHubPromotions(chrome, 'fast');
+  const [futuresPointsHtml, futuresLotteryHtml] = await mapWithConcurrency(
+    [FUTURES_POINTS_URL, FUTURES_LOTTERY_URL],
+    2,
+    (url) => dumpPage(chrome, url)
+  );
   if (!/(?:Скоро|Upcoming)/i.test(decodeHtml(futuresPointsHtml))) {
     throw new Error('Headless Chrome could not verify the Futures Points upcoming section');
   }
-  const futuresPoints = extractFuturesPointPromotions(futuresPointsHtml);
-  const futuresLottery = parseFuturesLotteryPage(futuresLotteryHtml);
   return {
-    promotions: [...unique.values()],
+    ...rewardHub,
+    futuresPoints: extractFuturesPointPromotions(futuresPointsHtml),
+    futuresLottery: parseFuturesLotteryPage(futuresLotteryHtml),
+  };
+}
+
+async function collectHalfHourlyPromotions(chrome) {
+  const rewardHub = await collectRewardHubPromotions(chrome, 'half-hour');
+  const announcements = await collectAnnouncementCampaigns(chrome);
+  return {
+    ...rewardHub,
     announcementCampaigns: announcements.promotions,
-    futuresPoints,
-    futuresLottery,
-    categories,
     announcements: {
       articles: announcements.articleCount,
       failedArticles: announcements.failedArticleCount,
@@ -585,10 +606,33 @@ async function collectCorePromotions(chrome) {
   };
 }
 
+async function collectHourlyPromotions(chrome) {
+  const rewardHub = await collectRewardHubPromotions(chrome, 'hourly');
+  return { ...rewardHub, launchpools: await collectLaunchpools(chrome) };
+}
+
+function mergePayloads(...payloads) {
+  const merged = {};
+  for (const payload of payloads) {
+    for (const [key, value] of Object.entries(payload)) {
+      if (Array.isArray(value)) merged[key] = [...(merged[key] || []), ...value];
+      else merged[key] = value;
+    }
+  }
+  if (merged.promotions) {
+    merged.promotions = [...new Map(merged.promotions.map((item) => [item.id, item])).values()];
+  }
+  if (merged.categories) merged.categories = [...new Set(merged.categories)];
+  if (merged.promotionScan) {
+    merged.promotionScan = { complete: true, pageCount: merged.categories?.length || 0 };
+  }
+  return merged;
+}
+
 function requestedSource() {
   const argument = process.argv.find((value) => value.startsWith('--source='));
   const source = argument?.slice('--source='.length) || process.env.GATE_SCRAPE_SOURCE || 'all';
-  if (!['all', 'announcements', 'candy', 'core', 'launchpool', 'lottery'].includes(source)) {
+  if (!['all', 'announcements', 'candy', 'core', 'fast', 'half-hour', 'hourly', 'launchpool', 'lottery'].includes(source)) {
     throw new Error(`Unknown scrape source: ${source}`);
   }
   return source;
@@ -599,11 +643,12 @@ async function main() {
   const source = requestedSource();
   const payload = {};
   if (source === 'all') {
-    const [core, candyDrops] = await Promise.all([
-      collectCorePromotions(chrome),
-      collectCandyDrops(chrome),
-    ]);
-    Object.assign(payload, core, { candyDrops });
+    const fast = await collectFastPromotions(chrome);
+    const halfHourly = await collectHalfHourlyPromotions(chrome);
+    const hourly = await collectHourlyPromotions(chrome);
+    Object.assign(payload, mergePayloads(fast, halfHourly, hourly), {
+      candyDrops: await collectCandyDrops(chrome),
+    });
   } else if (source === 'candy') {
     payload.candyDrops = await collectCandyDrops(chrome);
   } else if (source === 'announcements') {
@@ -618,8 +663,17 @@ async function main() {
     payload.launchpools = await collectLaunchpools(chrome);
   } else if (source === 'lottery') {
     payload.futuresLottery = parseFuturesLotteryPage(await dumpPage(chrome, FUTURES_LOTTERY_URL));
+  } else if (source === 'fast') {
+    Object.assign(payload, await collectFastPromotions(chrome));
+  } else if (source === 'half-hour') {
+    Object.assign(payload, await collectHalfHourlyPromotions(chrome));
+  } else if (source === 'hourly') {
+    Object.assign(payload, await collectHourlyPromotions(chrome));
   } else {
-    Object.assign(payload, await collectCorePromotions(chrome));
+    const fast = await collectFastPromotions(chrome);
+    const halfHourly = await collectHalfHourlyPromotions(chrome);
+    const hourly = await collectHourlyPromotions(chrome);
+    Object.assign(payload, mergePayloads(fast, halfHourly, hourly));
   }
 
   process.stderr.write(
@@ -642,6 +696,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  categoryUrlsFor,
   decodeHtml,
   discoverCategories,
   extractAnnouncementArticles,

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  categoryUrlsFor,
   discoverCategories,
   extractAnnouncementArticles,
   extractAnnouncementCampaigns,
@@ -12,6 +13,18 @@ const {
   extractLaunchpoolPromotions,
   extractPromotions,
 } = require('../scripts/scrape-gate-promotions');
+
+test('scheduler groups contain only the configured Rewards Hub categories', () => {
+  assert.deepEqual(categoryUrlsFor('fast'), [14, 213, 1066, 1].map((id) =>
+    `https://www.gate.com/ru/rewards_hub/activity-center-${id}-ongoing`
+  ));
+  assert.deepEqual(categoryUrlsFor('half-hour'), [
+    'https://www.gate.com/ru/rewards_hub/activity-center-17-ongoing',
+  ]);
+  assert.deepEqual(categoryUrlsFor('hourly'), [1037, 7].map((id) =>
+    `https://www.gate.com/ru/rewards_hub/activity-center-${id}-ongoing`
+  ));
+});
 const handler = require('../api/check');
 
 test('check endpoint rejects an invalid secret before external calls', async (context) => {

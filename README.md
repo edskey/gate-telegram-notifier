@@ -1,7 +1,6 @@
 # Gate partner Telegram notifier
 
-Serverless bot for **new Gate promotion cards**, **CandyDrop Upcoming cards**,
-**active Launchpool cards**,
+Serverless bot for **new Gate promotion cards**, **active Launchpool cards**,
 and **Futures Points upcoming airdrops and announced Lucky Draw cards**.
 It persists processed links/events in Upstash Redis and sends each one once to
 Telegram.
@@ -25,7 +24,9 @@ Telegram.
   publish a backlog of existing announcement campaigns. IDs are cross-checked
   against Activity Center promotions to prevent the same campaign being sent
   twice when Gate exposes it in both places.
-- The same public browser run checks CandyDrop and keeps only cards marked
+- CandyDrop parsing remains available for manual diagnostics, but its scheduled
+  checks are currently disabled.
+- When run manually, the CandyDrop parser keeps only cards marked
   `Start in`/`Upcoming`. It extracts the reward pool, reward type, countdown,
   and detail link into a separate deduplication source. For cards marked Fixed
   Rewards, it also opens the public detail page and extracts the fixed pool and
@@ -40,7 +41,7 @@ Telegram.
   conversion), minimum required points, and winning slots. Draw time is used
   only inside the stable event ID so identical-looking draws on different dates
   are still delivered once each. Its first run is a no-spam baseline.
-- The public `/ru/launchpool` page is checked in its own lightweight workflow.
+- The public `/ru/launchpool` page is checked by the hourly source group.
   Each active or upcoming project is keyed by its stable project ID/link, so
   changing APR values and countdowns do not create duplicate notifications.
   The alert includes the project, total rewards with Gate's displayed USDT
@@ -49,18 +50,17 @@ Telegram.
 - First run of every promotion source is a no-spam baseline.
 - Durable deduplication in Upstash Redis.
 - Telegram notifications for later promotion cards.
-- Independent GitHub Actions triggers every five minutes for Vercel Hobby.
-  CandyDrop and Launchpool run in their own lightweight workflows and do not
-  wait for or fail with the slower Rewards Hub/Futures scan.
+- One GitHub Actions workflow runs three independent source groups: every 10
+  minutes, every 30 minutes, and hourly. CandyDrop has no scheduled trigger.
 - Browser page loads are globally limited to two concurrent Chrome processes.
   Each failed or empty page is retried up to three times with a longer render
   budget before the workflow reports a real failure.
 
-The scheduler starts with the known Activity Center categories and discovers
-additional `activity-center-*-ongoing` links from the live page. It scans every
-category plus recent Latest Events articles and deduplicates matching promotion
-links across all sources. A failed announcement article is logged and retried on
-the next run without deleting previously stored campaign IDs. The Gate partner
+The scheduler scans only the configured Activity Center categories at their
+assigned frequencies. Recent Latest Events articles run every 30 minutes and
+matching promotion links are deduplicated across all sources. A failed
+announcement article is logged and retried on the next run without deleting
+previously stored campaign IDs. The Gate partner
 transaction ledger is disabled for scheduled POST runs; it can only be queried
 manually when `ENABLE_PARTNER_TRANSACTION_ALERTS=true` is deliberately set.
 
@@ -93,10 +93,16 @@ manually when `ENABLE_PARTNER_TRANSACTION_ALERTS=true` is deliberately set.
 ## Free-plan scheduling
 
 Vercel Hobby itself permits cron only once daily. The included GitHub Actions
-workflow invokes Vercel every five minutes, which is GitHub's shortest scheduled
-interval. Scheduled Actions can be delayed; this bot therefore detects new
-transaction IDs instead of assuming exact five-minute execution. Do not set a
-Gate API-key IP allowlist for Vercel Hobby because its outgoing IP is dynamic.
+workflow invokes Vercel in three groups:
+
+- every 10 minutes: Rewards Hub 14, 213, 1066, and 1; Futures Points Upcoming;
+  Futures Points ended lottery;
+- every 30 minutes: Rewards Hub 17 and Latest Events announcements;
+- hourly: Rewards Hub 1037 and 7, plus Launchpool.
+
+The schedules are offset to avoid starting multiple groups at the same minute.
+Scheduled Actions can still be delayed. Do not set a Gate API-key IP allowlist
+for Vercel Hobby because its outgoing IP is dynamic.
 
 ## Current promotion trigger
 
@@ -105,8 +111,8 @@ The bot treats a newly appearing promotion-card link (for example,
 Telegram. Channel formatting can be changed independently without affecting the
 deduplication rule.
 
-The two manual GitHub Actions triggers run the same production checks as their
-five-minute schedules unless their explicit test option is enabled. The protected
+The manual GitHub Actions trigger lets you choose one of the three production
+source groups. The protected
 Vercel endpoint accepts source-specific payloads without clearing or changing
 the state of omitted sources. If several genuinely new cards appear between
 checks, each is sent as a separate message. Delivery state is checkpointed

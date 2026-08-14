@@ -1,10 +1,21 @@
-name: Check Gate promotions and partner activity
+name: Check Gate promotions
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
+    - cron: '5,35 * * * *'
+    - cron: '15 * * * *'
   workflow_dispatch:
     inputs:
+      source_group:
+        description: 'Which production source group to check'
+        required: true
+        default: fast
+        type: choice
+        options:
+          - fast
+          - half-hour
+          - hourly
       test_notification:
         description: 'Send one silent Futures Lottery test notification'
         required: false
@@ -15,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gate-telegram-notifier-core
+  group: gate-telegram-notifier
   cancel-in-progress: false
 
 jobs:
@@ -26,8 +37,23 @@ jobs:
       - name: Checkout bot source
         uses: actions/checkout@v4
 
+      - name: Select source group
+        id: source
+        env:
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_SOURCE: ${{ inputs.source_group || 'fast' }}
+        run: |
+          case "$EVENT_SCHEDULE" in
+            '*/10 * * * *') source_group=fast ;;
+            '5,35 * * * *') source_group=half-hour ;;
+            '15 * * * *') source_group=hourly ;;
+            '') source_group="$MANUAL_SOURCE" ;;
+            *) echo "Unknown schedule: $EVENT_SCHEDULE" >&2; exit 1 ;;
+          esac
+          echo "source_group=$source_group" >> "$GITHUB_OUTPUT"
+
       - name: Collect Gate promotions in browser
-        run: node scripts/scrape-gate-promotions.js --source=core > /tmp/gate-promotions.json
+        run: node scripts/scrape-gate-promotions.js --source=${{ steps.source.outputs.source_group }} > /tmp/gate-promotions.json
 
       - name: Trigger protected Vercel check
         env:

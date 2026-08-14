@@ -274,14 +274,17 @@ function requestBody(req) {
 
 function promotionsFromRequest(req) {
   const body = requestBody(req);
-  if (!body || !Array.isArray(body.promotions) || body.promotions.length === 0) return null;
+  if (!body || !Array.isArray(body.promotions)) return null;
   const promotions = body.promotions.slice(0, MAX_SENT_IDS).map((item) => ({
     id: String(item.id || item.url || '').slice(0, 1000),
     url: String(item.url || '').slice(0, 2000),
     text: String(item.text || '').slice(0, 900),
   })).filter((item) => item.id && item.url && item.text);
-  if (promotions.length === 0) return null;
   const categories = Array.isArray(body.categories) ? body.categories.slice(0, 100) : [];
+  const scanComplete = body.promotionScan?.complete === true
+    && Number(body.promotionScan?.pageCount) === categories.length
+    && categories.length > 0;
+  if (promotions.length === 0 && !scanComplete) return null;
   const announcements = body.announcements && typeof body.announcements === 'object' ? {
     articles: Number(body.announcements.articles) || 0,
     failedArticles: Number(body.announcements.failedArticles) || 0,
