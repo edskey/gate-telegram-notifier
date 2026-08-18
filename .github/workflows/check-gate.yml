@@ -2,17 +2,16 @@ name: Check Gate promotions
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
-    - cron: '5,35 * * * *'
-    - cron: '15 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       source_group:
         description: 'Which production source group to check'
         required: true
-        default: fast
+        default: all
         type: choice
         options:
+          - all
           - fast
           - half-hour
           - hourly
@@ -41,14 +40,13 @@ jobs:
         id: source
         env:
           EVENT_SCHEDULE: ${{ github.event.schedule }}
-          MANUAL_SOURCE: ${{ inputs.source_group || 'fast' }}
+          MANUAL_SOURCE: ${{ inputs.source_group || 'all' }}
         run: |
           case "$EVENT_SCHEDULE" in
-            '*/10 * * * *') source_group=fast ;;
-            '5,35 * * * *') source_group=half-hour ;;
-            '15 * * * *') source_group=hourly ;;
+            '*/30 * * * *') source_group=all ;;
+            '0,30 * * * *') source_group=all ;;
             '') source_group="$MANUAL_SOURCE" ;;
-            *) echo "Unknown schedule: $EVENT_SCHEDULE" >&2; exit 1 ;;
+            *) source_group=all ;;
           esac
           echo "source_group=$source_group" >> "$GITHUB_OUTPUT"
 
@@ -67,13 +65,4 @@ jobs:
           if [ "$TEST_NOTIFICATION" = "true" ]; then
             extra_header=(-H "X-Gate-Bot-Test: true")
           fi
-          curl --fail-with-body --silent --show-error --max-time 20 \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-delay 2 \
-            -X POST \
-            -H "Authorization: Bearer $CHECK_SECRET" \
-            -H "Content-Type: application/json" \
-            "${extra_header[@]}" \
-            --data-binary @/tmp/gate-promotions.json \
-            "$CHECK_URL"
+          curl --fail-with-body --silent --show-error --max-time 20             --retry 3             --retry-all-errors             --retry-delay 2             -X POST             -H "Authorization: Bearer $CHECK_SECRET"             -H "Content-Type: application/json"             "${extra_header[@]}"             --data-binary @/tmp/gate-promotions.json             "$CHECK_URL"
