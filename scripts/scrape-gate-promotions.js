@@ -525,7 +525,7 @@ async function collectAnnouncementCampaigns(chrome) {
   const articles = extractAnnouncementArticles(indexHtml);
   if (articles.length === 0) throw new Error('Headless Chrome found no Gate Latest Events articles');
 
-  const articleResults = await mapWithConcurrency(articles, 2, async (article) => {
+  const articleResults = await mapWithConcurrency(articles.slice(0, 8), 3, async (article) => {
     try {
       const html = await dumpPage(chrome, article.url);
       return { article, promotions: extractAnnouncementCampaigns(html, article) };
@@ -555,7 +555,7 @@ function categoryUrlsFor(source) {
 
 async function collectRewardHubPromotions(chrome, source) {
   const categories = categoryUrlsFor(source);
-  const htmlPages = await mapWithConcurrency(categories, 2, (url) => dumpPage(chrome, url));
+  const htmlPages = await mapWithConcurrency(categories, 3, (url) => dumpPage(chrome, url));
   const unique = new Map();
   for (let index = 0; index < htmlPages.length; index += 1) {
     const html = htmlPages[index];
