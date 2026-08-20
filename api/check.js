@@ -19,8 +19,7 @@ function respond(res, status, body) {
 function matchesSecret(req) {
   const expected = process.env.CHECK_SECRET;
   if (!expected) return false;
-  const fromHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  const supplied = fromHeader || req.query?.secret || '';
+  const supplied = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   const a = Buffer.from(supplied);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
