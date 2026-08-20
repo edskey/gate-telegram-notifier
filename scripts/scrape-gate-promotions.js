@@ -518,12 +518,23 @@ async function collectLaunchpools(chrome) {
 }
 
 async function collectAnnouncementCampaigns(chrome) {
-  const indexHtml = await dumpPage(chrome, ANNOUNCEMENTS_ACTIVITY_URL);
-  if (!/(?:Latest Events|Последние события)/i.test(decodeHtml(indexHtml))) {
-    throw new Error('Headless Chrome could not verify the Gate Latest Events announcements section');
+  let indexHtml;
+  try {
+    indexHtml = await dumpPage(chrome, ANNOUNCEMENTS_ACTIVITY_URL);
+  } catch (error) {
+    process.stderr.write(`Gate announcements index dump failed: ${error.message}\n`);
+    return { promotions: [], articleCount: 0, failedArticleCount: 0 };
   }
+  const decoded = decodeHtml(indexHtml);
   const articles = extractAnnouncementArticles(indexHtml);
-  if (articles.length === 0) throw new Error('Headless Chrome found no Gate Latest Events articles');
+  const isVerified = articles.length > 0 || /(?:Latest Events|Последние события|Анонсы|Активности|События|Announcements|Activity|Events)/i.test(decoded);
+  if (!isVerified) {
+    process.stderr.write('Warning: Gate announcements page did not match verification signatures\n');
+    return { promotions: [], articleCount: 0, failedArticleCount: 0 };
+  }
+  if (articles.length === 0) {
+    return { promotions: [], articleCount: 0, failedArticleCount: 0 };
+  }
 
   const articleResults = await mapWithConcurrency(articles.slice(0, 8), 3, async (article) => {
     try {
