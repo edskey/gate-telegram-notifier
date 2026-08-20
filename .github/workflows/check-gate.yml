@@ -53,7 +53,9 @@ jobs:
           echo "source_group=$source_group" >> "$GITHUB_OUTPUT"
 
       - name: Collect Gate promotions in browser
-        run: node scripts/scrape-gate-promotions.js --source=${{ steps.source.outputs.source_group }} > /tmp/gate-promotions.json
+        env:
+          SOURCE_GROUP: ${{ steps.source.outputs.source_group }}
+        run: node scripts/scrape-gate-promotions.js --source="$SOURCE_GROUP" > /tmp/gate-promotions.json
 
       - name: Trigger protected Vercel check
         env:
