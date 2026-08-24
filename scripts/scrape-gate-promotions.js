@@ -360,12 +360,17 @@ function extractFuturesPointPromotions(html) {
       const candidate = balancedDiv(html, start);
       if (!candidate) continue;
       const candidateText = normalizeTimer(decodeHtml(candidate));
+      const minLabelCount = candidateText.match(/(?:Мин\.\s*требуемые\s*баллы|Minimum Required Points)/gi)?.length || 0;
+      const spentLabelCount = candidateText.match(/(?:Потраченные\s*баллы|Points Spent)/gi)?.length || 0;
       if (
-        /(?:Мин\.\s*требуемые\s*баллы|Minimum Required Points)/i.test(candidateText) &&
-        /(?:Потраченные\s*баллы|Points Spent)/i.test(candidateText) &&
-        /(?:Сумма\s*ваучера|Voucher Amount)/i.test(candidateText) &&
-        /(?:Аирдроп\s*начнется\s*через|Airdrop starts in)/i.test(candidateText)
+        minLabelCount === 1 &&
+        spentLabelCount === 1 &&
+        /(?:Аирдроп\s*начнется\s*через|Airdrop starts in)/i.test(candidateText) &&
+        /(?:Предстоящие|Upcoming)/i.test(candidateText)
       ) {
+        // This is the smallest complete card boundary. Do not climb to a
+        // parent grid looking for Voucher Amount: that can combine fields and
+        // countdowns from adjacent cards into a changing phantom event.
         cardHtml = candidate;
         break;
       }
@@ -591,27 +596,18 @@ async function collectRewardHubPromotions(chrome, source) {
 
 async function collectFastPromotions(chrome) {
   const rewardHub = await collectRewardHubPromotions(chrome, 'fast');
-  let futuresPoints = [];
-  let futuresLottery = [];
-  try {
-    const [futuresPointsHtml, futuresLotteryHtml] = await mapWithConcurrency(
-      [FUTURES_POINTS_URL, FUTURES_LOTTERY_URL],
-      2,
-      (url) => dumpPage(chrome, url)
-    );
-    if (/(?:Скоро|Upcoming)/i.test(decodeHtml(futuresPointsHtml))) {
-      futuresPoints = extractFuturesPointPromotions(futuresPointsHtml);
-    } else {
-      process.stderr.write('Warning: Futures Points upcoming signature not matched\n');
-    }
-    futuresLottery = parseFuturesLotteryPage(futuresLotteryHtml);
-  } catch (error) {
-    process.stderr.write(`Futures section dump error: ${error.message}\n`);
+  const [futuresPointsHtml, futuresLotteryHtml] = await mapWithConcurrency(
+    [FUTURES_POINTS_URL, FUTURES_LOTTERY_URL],
+    2,
+    (url) => dumpPage(chrome, url)
+  );
+  if (!/(?:Скоро|Upcoming)/i.test(decodeHtml(futuresPointsHtml))) {
+    throw new Error('Headless Chrome could not verify the Futures Points upcoming section');
   }
   return {
     ...rewardHub,
-    futuresPoints,
-    futuresLottery,
+    futuresPoints: extractFuturesPointPromotions(futuresPointsHtml),
+    futuresLottery: parseFuturesLotteryPage(futuresLotteryHtml),
   };
 }
 
