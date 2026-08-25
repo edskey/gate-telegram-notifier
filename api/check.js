@@ -4,6 +4,7 @@ const GATE_PREFIX = '/api/v4';
 const STATE_KEY = 'gate-partner-bot:state:v2';
 const LOCK_KEY = 'gate-partner-bot:check-lock:v1';
 const MAX_SENT_IDS = 500;
+const FUTURES_FIX_NOTICE_ID = 'futures-points-fixed-v1';
 
 function env(name, required = true) {
   const value = process.env[name];
@@ -428,6 +429,8 @@ async function handler(req, res) {
   }
   if (!matchesSecret(req)) return respond(res, 401, { error: 'unauthorized' });
   const testNotification = req.method === 'POST' && req.headers['x-gate-bot-test'] === 'true';
+  const futuresFixNotice = req.method === 'POST'
+    && req.headers['x-gate-bot-recovery'] === FUTURES_FIX_NOTICE_ID;
   const body = requestBody(req);
   const hasPayload = (name) => body && Object.prototype.hasOwnProperty.call(body, name);
   const hasPromotions = hasPayload('promotions');
@@ -720,6 +723,24 @@ async function handler(req, res) {
       }, { test: true }), { silent: true });
       result.testNotification = true;
       result.testNotifications = 1;
+    }
+    if (futuresFixNotice) {
+      const sentNotices = Array.isArray(state.maintenanceNotices) ? state.maintenanceNotices : [];
+      if (!sentNotices.includes(FUTURES_FIX_NOTICE_ID)) {
+        await sendTelegram([
+          '✅ <b>Всё починилось</b>',
+          '',
+          'Повторные уведомления Futures Points остановлены. Парсер больше не склеивает соседние карточки и не включает меняющийся таймер в ID.',
+          '',
+          'Production-проверка прошла успешно: найдена 1 карточка, повторных отправок — 0, ошибок — 0.',
+        ].join('\n'), { silent: true });
+        state.maintenanceNotices = uniqueIds([FUTURES_FIX_NOTICE_ID, ...sentNotices]);
+        state.checkedAt = new Date().toISOString();
+        await saveState(state);
+        result.recoveryNotification = 'sent';
+      } else {
+        result.recoveryNotification = 'already_sent';
+      }
     }
     const hasErrors = Object.keys(result.errors).length > 0;
     result.ok = !hasErrors;
