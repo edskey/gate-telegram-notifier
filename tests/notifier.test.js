@@ -428,6 +428,62 @@ test('manual test header sends exactly one silent Futures Lottery example withou
   assert.deepEqual(redisState.futuresLottery.sentIds, []);
 });
 
+test('Futures Points recovery notice is silent and sent only once', async (context) => {
+  Object.assign(process.env, {
+    CHECK_SECRET: 'test-check-secret',
+    UPSTASH_REDIS_REST_URL: 'https://redis.test',
+    UPSTASH_REDIS_REST_TOKEN: 'test-redis-token',
+    TELEGRAM_BOT_TOKEN: 'test-telegram-token',
+    TELEGRAM_CHAT_ID: '-1001234567890',
+  });
+  let redisState = { futuresPoints: { sentIds: [] } };
+  const messages = [];
+  context.mock.method(global, 'fetch', async (url, options = {}) => {
+    const target = String(url);
+    if (target === 'https://redis.test') {
+      const command = JSON.parse(options.body);
+      if (command[0] === 'SET' && command.includes('NX')) {
+        return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+      }
+      if (command[0] === 'GET') {
+        return new Response(JSON.stringify({ result: JSON.stringify(redisState) }), { status: 200 });
+      }
+      if (command[0] === 'SET') redisState = JSON.parse(command[2]);
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    }
+    if (target.includes('/sendMessage')) {
+      messages.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${target}`);
+  });
+
+  const run = async () => {
+    let status;
+    let body;
+    await handler({
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-check-secret',
+        'x-gate-bot-recovery': 'futures-points-fixed-v1',
+      },
+      body: { futuresPoints: [] },
+    }, {
+      status(value) { status = value; return this; },
+      setHeader() {},
+      end(value) { body = JSON.parse(value); },
+    });
+    assert.equal(status, 200);
+    return body;
+  };
+
+  assert.equal((await run()).recoveryNotification, 'sent');
+  assert.equal((await run()).recoveryNotification, 'already_sent');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].disable_notification, true);
+  assert.match(messages[0].text, /Всё починилось/);
+});
+
 test('CandyDrop-only payload sends promptly without touching unrelated sources', async (context) => {
   Object.assign(process.env, {
     CHECK_SECRET: 'test-check-secret',

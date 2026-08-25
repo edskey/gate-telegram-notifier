@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      recovery_notification:
+        description: 'Send the one-time silent Futures Points fix notice'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -62,11 +67,15 @@ jobs:
           CHECK_URL: ${{ secrets.VERCEL_CHECK_URL }}
           CHECK_SECRET: ${{ secrets.CHECK_SECRET }}
           TEST_NOTIFICATION: ${{ inputs.test_notification || 'false' }}
+          RECOVERY_NOTIFICATION: ${{ inputs.recovery_notification || 'false' }}
         run: |
           test -n "$CHECK_URL"
           test -n "$CHECK_SECRET"
           extra_header=()
           if [ "$TEST_NOTIFICATION" = "true" ]; then
             extra_header=(-H "X-Gate-Bot-Test: true")
+          fi
+          if [ "$RECOVERY_NOTIFICATION" = "true" ]; then
+            extra_header+=(-H "X-Gate-Bot-Recovery: futures-points-fixed-v1")
           fi
           curl --fail-with-body --silent --show-error --max-time 20             --retry 3             --retry-all-errors             --retry-delay 2             -X POST             -H "Authorization: Bearer $CHECK_SECRET"             -H "Content-Type: application/json"             "${extra_header[@]}"             --data-binary @/tmp/gate-promotions.json             "$CHECK_URL"
