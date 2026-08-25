@@ -386,12 +386,14 @@ function extractFuturesPointPromotions(html) {
     );
     if (!minMatch || !spentMatch || !voucherMatch || !timerMatch) continue;
 
-    const descriptor = text.slice(0, minMatch.index).slice(-300).trim();
     const minPoints = String(parseGateNumber(minMatch[1]));
     const spentPoints = String(parseGateNumber(spentMatch[1]));
     const voucherAmount = voucherMatch[1].replace(/\s+/g, ' ').trim();
     const startsIn = timerMatch[1].replace(/\s+/g, '').replace(/D/i, 'Д');
-    const signature = [descriptor, minPoints, spentPoints, voucherAmount].join('|');
+    // Keep compatibility with IDs already stored before the card-boundary fix.
+    // The prior correct voucher card used an empty descriptor; only the
+    // cross-card phantom included a changing countdown in that descriptor.
+    const signature = ['', minPoints, spentPoints, voucherAmount].join('|');
     const id = `futures-points:${crypto.createHash('sha256').update(signature).digest('hex')}`;
     promotions.set(id, {
       id,

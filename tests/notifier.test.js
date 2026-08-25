@@ -213,6 +213,7 @@ test('scraper never combines adjacent Futures Points cards into phantom changing
   assert.equal(first.length, 1);
   assert.equal(later.length, 1);
   assert.equal(first[0].id, later[0].id);
+  assert.equal(first[0].id, 'futures-points:f560ce65d337b62bc076ce4071436895bed6458bd5bdc66f76e696f3afdeac1b');
   assert.equal(first[0].spentPoints, '20');
   assert.equal(first[0].voucherAmount, '100 USDT');
 });
