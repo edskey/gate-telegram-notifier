@@ -170,6 +170,7 @@ test('scraper extracts Futures Points upcoming cards and excludes the changing t
     <div>Потраченные баллы: <b>20</b></div>
     <div>Сумма ваучера: <b>100 USDT</b></div>
     <div>Аирдроп начнется через <span>1Д</span> <span>${timer}</span></div>
+    <button disabled>Предстоящие</button>
   </div>`;
   const first = extractFuturesPointPromotions(card('15 : 26 : 37'));
   const later = extractFuturesPointPromotions(card('15 : 21 : 37'));
@@ -185,6 +186,35 @@ test('scraper extracts Futures Points upcoming cards and excludes the changing t
     voucherAmount: '100 USDT',
     startsIn: '1Д15:26:37',
   });
+});
+
+test('scraper never combines adjacent Futures Points cards into phantom changing events', () => {
+  const page = (timer) => `<div class="points-grid">
+    <div class="points-card">
+      <h3>GUSD</h3><span>Скоро</span>
+      <div>Мин. требуемые баллы <b>120</b></div>
+      <div>Потраченные баллы <b>15</b></div>
+      <div>На долю <b>12 GUSD</b></div>
+      <div>Аирдроп начнется через <span>1Д ${timer}</span></div>
+      <button disabled>Предстоящие</button>
+    </div>
+    <div class="points-card">
+      <h3>Ваучер</h3><span>Скоро</span>
+      <div>Мин. требуемые баллы <b>40</b></div>
+      <div>Потраченные баллы <b>20</b></div>
+      <div>Сумма ваучера <b>100 USDT</b></div>
+      <div>Аирдроп начнется через <span>1Д ${timer}</span></div>
+      <button disabled>Предстоящие</button>
+    </div>
+  </div>`;
+  const first = extractFuturesPointPromotions(page('10:48:31'));
+  const later = extractFuturesPointPromotions(page('10:48:26'));
+
+  assert.equal(first.length, 1);
+  assert.equal(later.length, 1);
+  assert.equal(first[0].id, later[0].id);
+  assert.equal(first[0].spentPoints, '20');
+  assert.equal(first[0].voucherAmount, '100 USDT');
 });
 
 test('scraper extracts announced Futures Points lottery cards without price conversion', () => {
